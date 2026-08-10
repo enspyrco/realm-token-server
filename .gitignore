@@ -1,0 +1,8 @@
+node_modules/
+*.log
+.env
+.env.local
+# Never commit key material or service accounts.
+*.pem
+*-service-account.json
+serviceAccount*.json
