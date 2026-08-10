@@ -1,0 +1,9 @@
+services:
+  realm-token-server:
+    build: .
+    container_name: realm-token-server
+    restart: unless-stopped
+    env_file: .env
+    # Bind to loopback only — Caddy fronts it with TLS at realm-token.imagineering.cc.
+    ports:
+      - "127.0.0.1:8791:8080"
