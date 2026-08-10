@@ -21,7 +21,9 @@ export const REALM_LIVEKIT_AUDIENCE = 'realm:livekit-mint';
  */
 export function issueRealmCredential(privateKeyPem, { subject, provider, ttlSeconds = 3600 }) {
   if (!subject) throw new Error('issueRealmCredential: subject is required');
-  if (!(ttlSeconds > 0)) throw new Error('issueRealmCredential: ttlSeconds must be positive');
+  // >= 1 whole second: exp/iat are integer seconds, so a sub-second ttl would
+  // floor to exp == iat and mint an already-dead credential.
+  if (!(ttlSeconds >= 1)) throw new Error('issueRealmCredential: ttlSeconds must be >= 1');
   // Compute whole-second iat/exp FIRST and derive expiresAt back from exp, so the
   // advertised expiresAt is byte-for-byte the token's exp — no sub-second tail
   // where a client believes a rejected token is still live. (noTimestamp: we set

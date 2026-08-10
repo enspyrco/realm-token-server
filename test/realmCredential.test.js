@@ -31,11 +31,14 @@ test('expiresAt is byte-for-byte the token exp (no sub-second drift)', () => {
   assert.equal(new Date(cred.expiresAt).getTime(), decoded.exp * 1000);
 });
 
-test('a non-positive ttl is rejected', () => {
-  assert.throws(
-    () => issueRealmCredential(keys.privateKeyPem, { subject: 'u', provider: 'google', ttlSeconds: 0 }),
-    /positive/,
-  );
+test('a non-positive or sub-second ttl is rejected', () => {
+  for (const bad of [0, -10, 0.5]) {
+    assert.throws(
+      () => issueRealmCredential(keys.privateKeyPem, { subject: 'u', provider: 'google', ttlSeconds: bad }),
+      />= 1/,
+      `ttlSeconds ${bad} should be rejected`,
+    );
+  }
 });
 
 test('a token signed by a DIFFERENT key is rejected (mint cannot forge)', () => {
