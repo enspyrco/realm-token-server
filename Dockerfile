@@ -14,9 +14,9 @@ ENV NODE_ENV=production
 ENV PORT=8080
 EXPOSE 8080
 
-# Runtime secrets are injected as env (never baked into the image):
+# Runtime config injected as env (never baked into the image):
 #   REALM_JWT_PRIVATE_KEY   ES256 private key (PEM) — exchange handler only
 #   REALM_JWT_PUBLIC_KEY    ES256 public key  (PEM) — mint handler
 #   LIVEKIT_API_KEY / LIVEKIT_API_SECRET   from the box's livekit.yaml
-#   GOOGLE_APPLICATION_CREDENTIALS  Firebase service account for Admin SDK
+#   FIREBASE_PROJECT_ID     e.g. adventures-in-tech-world-0 (no SA JSON needed)
 CMD ["node", "src/index.js"]

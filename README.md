@@ -14,6 +14,10 @@ Firebase Admin SDK (first-class in Node, mature nowhere in Dart), so the server
 is Node. Firebase shrinks to being an *identity provider*; everything real-time
 is ours.
 
+**No Firebase service account needed.** `verifyIdToken` (checkRevoked=false)
+fetches only Google's public signing certs, so the Admin SDK initialises from
+`FIREBASE_PROJECT_ID` alone — there is no JSON key to store or rotate.
+
 ## Two endpoints, one service
 
 ```

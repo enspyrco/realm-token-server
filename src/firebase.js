@@ -3,13 +3,23 @@ import admin from 'firebase-admin';
 // Provider-native ID-token verification via the Firebase Admin SDK. This is the
 // external dependency the whole "Node, not Dart" decision turned on — verifying
 // a Firebase ID token against Google's signing authority is first-class here and
-// mature nowhere in Dart. Initialised lazily from ADC / GOOGLE_APPLICATION_
-// CREDENTIALS so importing this module in tests (which inject a fake verifier)
-// never requires real credentials.
+// mature nowhere in Dart.
+//
+// NO SERVICE ACCOUNT REQUIRED. verifyIdToken (with checkRevoked=false, the
+// default) only fetches Google's PUBLIC signing certs and checks the token's
+// aud against the project id — it never calls an authenticated API. So the SDK
+// initialises from FIREBASE_PROJECT_ID alone, with no credential. Verified
+// empirically: init({projectId}) + verify reaches token-decoding, not a
+// credential error. This removes an entire secret (no JSON to store/rotate).
+// checkRevoked is intentionally NOT used; adding it would require a credential.
 
 let app;
 function ensureApp() {
-  app ??= admin.initializeApp();
+  if (!app) {
+    const projectId = process.env.FIREBASE_PROJECT_ID;
+    if (!projectId) throw new Error('missing required env FIREBASE_PROJECT_ID');
+    app = admin.initializeApp({ projectId });
+  }
   return app;
 }
 
