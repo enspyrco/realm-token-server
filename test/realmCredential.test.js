@@ -42,7 +42,9 @@ test('a tampered token is rejected', () => {
   const cred = issueRealmCredential(keys.privateKeyPem, { subject: 'u', provider: 'google' });
   const parts = cred.token.split('.');
   const sig = parts[2];
-  const tampered = `${parts[0]}.${parts[1]}.${sig.slice(0, -1)}${sig.endsWith('A') ? 'B' : 'A'}`;
+  // Flip the FIRST signature char — it encodes real high bits of byte 0. (The
+  // LAST char holds don't-care padding bits, so flipping it can be a no-op.)
+  const tampered = `${parts[0]}.${parts[1]}.${sig[0] === 'A' ? 'B' : 'A'}${sig.slice(1)}`;
   assert.throws(() => verifyRealmCredential(keys.publicKeyPem, tampered), RealmCredentialRejected);
 });
 
