@@ -25,6 +25,19 @@ test('round-trip: a minted credential verifies to its subject + provider', () =>
   assert.ok(new Date(cred.expiresAt) > new Date());
 });
 
+test('expiresAt is byte-for-byte the token exp (no sub-second drift)', () => {
+  const cred = issueRealmCredential(keys.privateKeyPem, { subject: 'u', provider: 'google' });
+  const decoded = jwt.decode(cred.token);
+  assert.equal(new Date(cred.expiresAt).getTime(), decoded.exp * 1000);
+});
+
+test('a non-positive ttl is rejected', () => {
+  assert.throws(
+    () => issueRealmCredential(keys.privateKeyPem, { subject: 'u', provider: 'google', ttlSeconds: 0 }),
+    /positive/,
+  );
+});
+
 test('a token signed by a DIFFERENT key is rejected (mint cannot forge)', () => {
   // The mint handler has only the public key; even a full attacker-controlled
   // issuer cannot mint a credential the real verifier accepts.
@@ -49,12 +62,13 @@ test('a tampered token is rejected', () => {
 });
 
 test('an expired credential is rejected', () => {
-  const cred = issueRealmCredential(keys.privateKeyPem, {
-    subject: 'u',
-    provider: 'google',
-    ttlSeconds: -10, // exp already in the past
-  });
-  assert.throws(() => verifyRealmCredential(keys.publicKeyPem, cred.token), RealmCredentialRejected);
+  const now = Math.floor(Date.now() / 1000);
+  const token = jwt.sign(
+    { prov: 'google', iat: now - 7200, exp: now - 3600 }, // expired an hour ago
+    keys.privateKeyPem,
+    { algorithm: 'ES256', issuer: REALM_ISSUER, audience: REALM_LIVEKIT_AUDIENCE, subject: 'u', noTimestamp: true },
+  );
+  assert.throws(() => verifyRealmCredential(keys.publicKeyPem, token), RealmCredentialRejected);
 });
 
 test('a wrong-audience token is rejected', () => {

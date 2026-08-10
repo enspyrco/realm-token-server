@@ -21,20 +21,25 @@ export const REALM_LIVEKIT_AUDIENCE = 'realm:livekit-mint';
  */
 export function issueRealmCredential(privateKeyPem, { subject, provider, ttlSeconds = 3600 }) {
   if (!subject) throw new Error('issueRealmCredential: subject is required');
-  const expiresAt = new Date(Date.now() + ttlSeconds * 1000);
+  if (!(ttlSeconds > 0)) throw new Error('issueRealmCredential: ttlSeconds must be positive');
+  // Compute whole-second iat/exp FIRST and derive expiresAt back from exp, so the
+  // advertised expiresAt is byte-for-byte the token's exp — no sub-second tail
+  // where a client believes a rejected token is still live. (noTimestamp: we set
+  // iat ourselves; passing exp in the payload means no expiresIn option.)
+  const iatSeconds = Math.floor(Date.now() / 1000);
+  const expSeconds = iatSeconds + Math.floor(ttlSeconds);
   const token = jwt.sign(
-    { prov: provider },
+    { prov: provider, iat: iatSeconds, exp: expSeconds },
     privateKeyPem,
     {
       algorithm: 'ES256',
       issuer: REALM_ISSUER,
       audience: REALM_LIVEKIT_AUDIENCE,
       subject,
-      // exp is derived from the same instant as expiresAt (whole seconds).
-      expiresIn: ttlSeconds,
+      noTimestamp: true,
     },
   );
-  return { token, expiresAt: expiresAt.toISOString() };
+  return { token, expiresAt: new Date(expSeconds * 1000).toISOString() };
 }
 
 /**
