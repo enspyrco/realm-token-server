@@ -21,6 +21,7 @@ export const REALM_LIVEKIT_AUDIENCE = 'realm:livekit-mint';
  */
 export function issueRealmCredential(privateKeyPem, { subject, provider, ttlSeconds = 3600 }) {
   if (!subject) throw new Error('issueRealmCredential: subject is required');
+  if (!provider) throw new Error('issueRealmCredential: provider is required');
   // >= 1 whole second: exp/iat are integer seconds, so a sub-second ttl would
   // floor to exp == iat and mint an already-dead credential.
   if (!(ttlSeconds >= 1)) throw new Error('issueRealmCredential: ttlSeconds must be >= 1');
