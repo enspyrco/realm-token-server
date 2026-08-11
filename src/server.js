@@ -1,6 +1,7 @@
 import express from 'express';
 import { makeExchangeHandler } from './exchange.js';
 import { makeMintHandler } from './mint.js';
+import { makeCorsMiddleware } from './cors.js';
 
 // Builds the express app. Every dependency is injected so tests supply fakes for
 // the provider verifier and the LiveKit minter — no real credentials needed to
@@ -15,8 +16,13 @@ export function createApp({
   publicKeyPem,
   mintLiveKitToken,
   ttlSeconds = 3600,
+  allowedOrigins = [],
+  allowLocalhost = false,
 }) {
   const app = express();
+  // Before the body parser: a preflight carries no body, and a denied origin
+  // should not reach the parser at all.
+  app.use(makeCorsMiddleware({ allowedOrigins, allowLocalhost }));
   app.use(express.json({ limit: '16kb' }));
 
   app.get('/healthz', (_req, res) => res.json({ ok: true }));

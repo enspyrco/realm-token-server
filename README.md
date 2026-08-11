@@ -31,12 +31,27 @@ GET  /healthz
    (ES256). Holds the ES256 **private** key.
 2. **`/livekit-token`** — verifies the Realm credential (public key only) and
    mints a LiveKit access token with agent dispatch embedded. Accepts **only** a
-   Realm credential — never a raw ID token — so the exchange boundary can't be
-   bypassed.
+   Realm credential — never a raw ID token — so the *authentication* boundary
+   can't be bypassed.
 
 **Asymmetric signing is load-bearing:** the mint handler holds only the public
 key, so no mint-side bug can forge a credential. Enforced structurally by which
 closure receives which key (`src/server.js`).
+
+**Not yet enforced: room authorization.** `/livekit-token` answers *who are
+you*, not *may you enter this room* — any authenticated caller can currently
+mint a token for any `roomName`. Private rooms need an admission predicate the
+Realm data model does not yet have (rooms carry `editorIds`/`canEdit`, which is
+edit rights, not a join roster). Tracked in `nickmeinhold/claude-tasks#2850`.
+
+## CORS
+
+The deployed client is Flutter **web**, so both endpoints are cross-origin and
+unreachable from the browser without CORS headers — while curl and the native
+builds keep working, which is how this failure hides. `CORS_ALLOWED_ORIGINS` is
+a **required**, comma-separated, exact-match allowlist (`src/cors.js`); never
+`*`, because callers send a bearer credential. Set `CORS_ALLOW_LOCALHOST=true`
+in dev only — Flutter's dev server picks a random port per run.
 
 ## Contract parity
 
