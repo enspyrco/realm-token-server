@@ -1,9 +1,22 @@
 services:
   realm-token-server:
-    build: .
+    # Pinned version, pulled from GHCR — never built on the box. To deploy a new
+    # version: bump this tag, then `docker compose pull && docker compose up -d`.
+    # Rollback is the same operation with the previous tag. The registry is
+    # private, so the host needs `docker login ghcr.io` first (see README).
+    image: ghcr.io/enspyrco/realm-token-server:0.1.0
     container_name: realm-token-server
     restart: unless-stopped
     env_file: .env
     # Bind to loopback only — Caddy fronts it with TLS at realm-token.imagineering.cc.
     ports:
       - "127.0.0.1:8791:8080"
+    # So `docker compose ps` answers "is the new version actually serving?"
+    # rather than merely "did the process start?" — the distinction a deploy
+    # needs and `up -d` alone does not give.
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
