@@ -77,5 +77,10 @@ export function verifyRealmCredential(publicKeyPem, token) {
   if (!decoded.sub) {
     throw new RealmCredentialRejected('missing subject claim');
   }
+  // Require exp: jsonwebtoken only checks exp when present, so a validly-signed
+  // token without it would never expire — breaking revocation-by-expiry.
+  if (typeof decoded.exp !== 'number') {
+    throw new RealmCredentialRejected('missing exp claim');
+  }
   return { subject: decoded.sub, provider: decoded.prov };
 }

@@ -74,6 +74,15 @@ test('an expired credential is rejected', () => {
   assert.throws(() => verifyRealmCredential(keys.publicKeyPem, token), RealmCredentialRejected);
 });
 
+test('a validly-signed token with no exp is rejected (no immortal creds)', () => {
+  const token = jwt.sign(
+    { prov: 'google', iat: Math.floor(Date.now() / 1000) }, // no exp
+    keys.privateKeyPem,
+    { algorithm: 'ES256', issuer: REALM_ISSUER, audience: REALM_LIVEKIT_AUDIENCE, subject: 'u', noTimestamp: true },
+  );
+  assert.throws(() => verifyRealmCredential(keys.publicKeyPem, token), RealmCredentialRejected);
+});
+
 test('a wrong-audience token is rejected', () => {
   const token = jwt.sign({ prov: 'google' }, keys.privateKeyPem, {
     algorithm: 'ES256',
