@@ -92,6 +92,46 @@ unlike a cookie a hostile origin cannot make the browser attach it. What the
 allowlist buys is denying cross-origin reconnaissance, and staying correct if
 this service ever gains a cookie or `Access-Control-Allow-Credentials`.
 
+## Logging
+
+One structured JSON line per request (`src/requestLog.js`) — method, path,
+status, duration, `origin`, and whether CORS admitted it. Mounted before CORS,
+so refused requests (403s, denied preflights) are logged too: a denial that
+leaves no trace is indistinguishable from no traffic.
+
+**Transport facts only, and the path is normalised rather than echoed.** Nothing
+derived from a request body, an `Authorization` header, or a minted token is
+logged — and because a URL carries secrets just as readily (a copied link, a
+proxy rewrite, a client appending a token to `/exchange/…`), an unrecognised
+path is recorded as `other`. Excluding bodies and headers alone was not "by
+construction"; this is. There is deliberately no subject, so correlation costs a
+considered change rather than leaking a uid by default. A test asserts the ID
+token, the presented credential, the minted token and the subject are all absent.
+
+**A throwing log sink cannot take down the mint.** The write happens in an
+`EventEmitter` listener after the response is sent, so an escaping throw would be
+an uncaught exception. It is wrapped, and a test asserts a *subsequent logged
+request* still succeeds while the sink throws.
+
+Stated precisely, because the weaker claim is the true one: this covers
+**exceptions**, not backpressure. `console.log` is a synchronous write, so a
+backed-up Docker logging driver blocks the event loop rather than throwing — and
+this raises the write rate from one line per process to one per request. The sink
+must also be synchronous: a function returning a rejected promise escapes the
+`try` entirely.
+
+Both `finish` and `close` are handled (guarded to write once), so an aborted
+connection or a slowloris hold is logged with `completed: false` rather than
+vanishing — the same silence this module exists to end, on the path that matters
+most. `origin` is truncated to 256 chars, and `originAllowed` is `null` rather
+than `false` when no `Origin` was sent, since those requests are served.
+
+`Origin` is attacker-controlled, so lines are emitted via `JSON.stringify`: a
+raw-string format would let a newline in `Origin` forge whole log entries.
+
+`/healthz` is skipped — the container healthcheck fires every 30s and
+`docker inspect` already answers what those lines would say.
+
 ## Contract parity
 
 The credential format (`iss=realm`, `aud=realm:livekit-mint`, `sub`, `prov`

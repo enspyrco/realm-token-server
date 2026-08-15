@@ -2,6 +2,7 @@ import express from 'express';
 import { makeExchangeHandler } from './exchange.js';
 import { makeMintHandler } from './mint.js';
 import { makeCorsMiddleware } from './cors.js';
+import { makeRequestLogger } from './requestLog.js';
 
 // Builds the express app. Every dependency is injected so tests supply fakes for
 // the provider verifier and the LiveKit minter — no real credentials needed to
@@ -18,6 +19,7 @@ export function createApp({
   ttlSeconds = 3600,
   allowedOrigins,
   allowLocalhost = false,
+  log,
 }) {
   // Required, not defaulted. A default of [] builds a server that is green on
   // /healthz, fine under curl, and refuses every honest browser — the silent
@@ -29,7 +31,12 @@ export function createApp({
 
   const app = express();
 
-  // FIRST, ahead of CORS: the preflight short-circuits with a 204 inside the
+  // Before everything, so the log sees requests CORS refuses (403s, denied
+  // preflights) — those are exactly the ones worth seeing. It writes on
+  // 'finish', so the status it records is the one actually sent.
+  app.use(makeRequestLogger(log ? { log } : {}));
+
+  // Ahead of CORS: the preflight short-circuits with a 204 inside the
   // CORS middleware, so anything mounted after it never sees an OPTIONS. A
   // preflight is the one response class designed to be cached, which makes it
   // the one that most needs the directive. Service-wide rather than per-route so
