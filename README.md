@@ -92,6 +92,26 @@ unlike a cookie a hostile origin cannot make the browser attach it. What the
 allowlist buys is denying cross-origin reconnaissance, and staying correct if
 this service ever gains a cookie or `Access-Control-Allow-Credentials`.
 
+## Logging
+
+One structured JSON line per request (`src/requestLog.js`) — method, path,
+status, duration, `origin`, and whether CORS admitted it. Mounted before CORS,
+so refused requests (403s, denied preflights) are logged too: a denial that
+leaves no trace is indistinguishable from no traffic.
+
+**Transport facts only.** Nothing derived from a request body, an
+`Authorization` header, or a minted token is logged, so credential material
+cannot reach the log by construction rather than by remembering to redact. That
+costs correlation — there is deliberately no subject in these lines — and a test
+asserts the ID token, the presented credential, the minted token and the subject
+are all absent.
+
+`Origin` is attacker-controlled, so lines are emitted via `JSON.stringify`: a
+raw-string format would let a newline in `Origin` forge whole log entries.
+
+`/healthz` is skipped — the container healthcheck fires every 30s and
+`docker inspect` already answers what those lines would say.
+
 ## Contract parity
 
 The credential format (`iss=realm`, `aud=realm:livekit-mint`, `sub`, `prov`
