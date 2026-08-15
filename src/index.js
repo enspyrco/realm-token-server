@@ -1,6 +1,7 @@
 import { createApp } from './server.js';
 import { verifyFirebaseIdToken } from './firebase.js';
 import { makeLiveKitMinter } from './livekit.js';
+import { corsConfigFromEnv } from './cors.js';
 
 function requireEnv(name) {
   const v = process.env[name];
@@ -10,6 +11,7 @@ function requireEnv(name) {
 
 // PEM env vars may arrive with literal "\n" (e.g. from a single-line secret store).
 const pem = (name) => requireEnv(name).replace(/\\n/g, '\n');
+
 
 const app = createApp({
   verifyProviderIdToken: verifyFirebaseIdToken,
@@ -21,6 +23,7 @@ const app = createApp({
     apiSecret: requireEnv('LIVEKIT_API_SECRET'),
   }),
   ttlSeconds: Number(process.env.REALM_CREDENTIAL_TTL_SECONDS || 3600),
+  ...corsConfigFromEnv(process.env),
 });
 
 const port = Number(process.env.PORT || 8080);

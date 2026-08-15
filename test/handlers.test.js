@@ -25,6 +25,9 @@ const app = createApp({
   privateKeyPem: keys.privateKeyPem,
   publicKeyPem: keys.publicKeyPem,
   mintLiveKitToken: fakeMint,
+  // This suite exercises the handlers, not CORS; [] is the explicit "serves no
+  // browser" choice createApp now requires rather than silently defaulting to.
+  allowedOrigins: [],
 });
 
 let server;

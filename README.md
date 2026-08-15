@@ -31,12 +31,66 @@ GET  /healthz
    (ES256). Holds the ES256 **private** key.
 2. **`/livekit-token`** — verifies the Realm credential (public key only) and
    mints a LiveKit access token with agent dispatch embedded. Accepts **only** a
-   Realm credential — never a raw ID token — so the exchange boundary can't be
-   bypassed.
+   Realm credential — never a raw ID token — so the *authentication* boundary
+   can't be bypassed.
 
 **Asymmetric signing is load-bearing:** the mint handler holds only the public
 key, so no mint-side bug can forge a credential. Enforced structurally by which
 closure receives which key (`src/server.js`).
+
+**Not yet enforced: room authorization.** `/livekit-token` answers *who are
+you*, not *may you enter this room* — any authenticated caller can currently
+mint a token for any `roomName`. Private rooms need an admission predicate the
+Realm data model does not yet have (rooms carry `editorIds`/`canEdit`, which is
+edit rights, not a join roster). Tracked in `nickmeinhold/claude-tasks#2850`.
+
+## CORS
+
+The deployed client is Flutter **web**, so both endpoints are cross-origin and
+unreachable from the browser without CORS headers — while curl and the native
+builds keep working, which is how this failure hides. `CORS_ALLOWED_ORIGINS` is
+a **required**, comma-separated, exact-match allowlist (`src/cors.js`); never
+`*`. Set `CORS_ALLOW_LOCALHOST=true` in dev only — Flutter's dev server picks a
+random port per run.
+
+When `NODE_ENV=production` (which the Dockerfile sets), two rules apply, both
+resolved in one place — `corsConfigFromEnv` in `src/cors.js`:
+
+1. **Every allowlisted origin must be an `https` DNS name.** Both halves are
+   required and neither implies the other. `https` alone still admits
+   `https://app.localhost` and `https://[::ffff:7f00:1]`; the host rule alone
+   would still admit a plaintext downgrade of the real origin
+   (`http://world.imagineering.cc`). The host rule is stated as a requirement —
+   *a real deployment's origin is a DNS name* — rather than as a denylist of
+   loopback aliases, because loopback has more names than anyone enumerates
+   (`localhost`, `127.0.0.0/8`, `[::1]`, `[::ffff:7f00:1]`, `app.localhost` per
+   RFC 6761, `0.0.0.0`) and two successive denylists here were both incomplete.
+   IP literals in either family are refused outright via `net.isIP`.
+2. **`CORS_ALLOW_LOCALHOST=true` is refused outright**, because the opt-in admits
+   any port on loopback — harmless on a laptop, and on a public mint it would let
+   any page a developer's machine loads read `/exchange` and `/livekit-token`.
+
+A request carrying **no** `Origin` is served normally (curl, the bot, health
+checks). A **disallowed** `Origin` is handled differently by request kind: a
+preflight gets `204` *without* the allow headers, which is what makes the browser
+block the real request; a non-preflight request gets `403`. That second rule is
+not authentication — `Origin` is forgeable off-browser and the bearer credential
+remains the only thing that authorises — it closes the window where an honest
+browser still reaches the handler via a preflight cached from before an origin
+was revoked.
+
+Entries are validated at boot: each must be exactly `scheme://host[:port]`, and
+`*`, `null`, a trailing slash, a path, or an explicit default port are all
+rejected with the offending value named. Every one of those matches no `Origin`
+a browser will ever send, so accepting them would boot a server that is green on
+`/healthz`, fine under curl, and dead in the browser — the precise failure this
+allowlist exists to remove.
+
+The exact-match rule is defence in depth rather than the only thing standing
+between a page and a session: the bearer credential is not ambient authority, so
+unlike a cookie a hostile origin cannot make the browser attach it. What the
+allowlist buys is denying cross-origin reconnaissance, and staying correct if
+this service ever gains a cookie or `Access-Control-Allow-Credentials`.
 
 ## Contract parity
 
