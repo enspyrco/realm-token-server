@@ -1,0 +1,91 @@
+name: publish
+
+# Builds and publishes a versioned image to GHCR. The server then deploys by
+# pulling a pinned version — no rsync, no build-on-box, no source on the host.
+#
+# Deliberately NOT a moving tag: this service mints credentials, so a merge to
+# main publishes an artifact but never changes what is running. Promoting a
+# version is a separate, human act (see README "Deploy").
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm test
+
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version from package.json
+        id: version
+        run: echo "value=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # A version tag must name exactly one image forever, or "pinned to 0.2.0"
+      # stops meaning anything and rollback silently lands on the wrong build.
+      # Overwriting is the default registry behaviour, so refuse explicitly:
+      # merging without bumping the version is the mistake this catches.
+      - name: Refuse to overwrite an existing version tag
+        env:
+          TAG: ${{ env.IMAGE }}:${{ steps.version.outputs.value }}
+        run: |
+          if docker manifest inspect "$TAG" >/dev/null 2>&1; then
+            echo "::error::$TAG already exists. Bump \"version\" in package.json." >&2
+            exit 1
+          fi
+          echo "$TAG is unused — ok to publish."
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          # Both tags are immutable: the version is what compose pins, the sha
+          # is what ties a running container back to a commit.
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.version.outputs.value }}
+            ${{ env.IMAGE }}:sha-${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Summary
+        run: |
+          {
+            echo "### Published"
+            echo ""
+            echo '```'
+            echo "${{ env.IMAGE }}:${{ steps.version.outputs.value }}"
+            echo "digest: ${{ steps.build.outputs.digest }}"
+            echo '```'
+            echo ""
+            echo "Not yet deployed. To promote, pin this version in the box's"
+            echo "\`docker-compose.yml\` and run \`docker compose pull && docker compose up -d\`."
+          } >> "$GITHUB_STEP_SUMMARY"

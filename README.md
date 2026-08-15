@@ -58,6 +58,50 @@ npm test               # node --test (no real credentials needed)
 
 ## Deploy (OCI)
 
-Built as a Docker image, run beside LiveKit + the bot. Secrets are injected as
-env (never baked into the image) — see the `Dockerfile` header. The LiveKit
+Runs beside LiveKit + the bot as a Docker container. Secrets are injected as env
+and never baked into the image (see the `Dockerfile` header); the LiveKit
 key/secret are the same pair already in the box's `livekit.yaml`.
+
+**The box never builds and never sees the source.** CI publishes a versioned
+image to GHCR; the host pulls a pinned version.
+
+### Release — publish an image
+
+1. Bump `version` in `package.json`.
+2. Merge to `main`. `.github/workflows/publish.yml` runs the tests, then pushes
+   `ghcr.io/enspyrco/realm-token-server:<version>` and `:sha-<commit>`.
+
+Publishing is **not** deploying: nothing running changes. A version tag is
+immutable — the workflow fails rather than overwrite one, so merging without
+bumping `version` is caught in CI instead of silently replacing a released
+artifact.
+
+### Promote — deploy that version
+
+```bash
+ssh <box>
+cd ~/apps/realm-token-server
+$EDITOR docker-compose.yml          # bump the image tag
+docker compose pull && docker compose up -d
+docker compose ps                   # wait for healthy (healthcheck hits /healthz)
+```
+
+Rollback is the same three commands with the previous tag — the old image is
+still in the registry and still immutable.
+
+Deliberately a human step. This service mints credentials, so an auth boundary
+should not redeploy itself on merge. Switching to reactive CD later (the
+`cd-bus` fleet template in `enspyrco/infra`) means pointing the compose `image:`
+at a moving tag — a one-line change, not a rework.
+
+### One-time host setup
+
+The registry is private, so the host needs a GHCR read token:
+
+```bash
+echo "$GHCR_READ_PAT" | docker login ghcr.io -u <github-user> --password-stdin
+```
+
+The box's `.env` must contain every variable in `.env.example` — including
+`CORS_ALLOWED_ORIGINS`, which is required at startup. A container that boots
+without it exits immediately rather than serving a web-broken deployment.
