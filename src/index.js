@@ -23,7 +23,9 @@ const app = createApp({
     apiSecret: requireEnv('LIVEKIT_API_SECRET'),
   }),
   ttlSeconds: Number(process.env.REALM_CREDENTIAL_TTL_SECONDS || 3600),
-  allowedOrigins: requireAllowedOrigins(requireEnv('CORS_ALLOWED_ORIGINS')),
+  allowedOrigins: requireAllowedOrigins(requireEnv('CORS_ALLOWED_ORIGINS'), {
+    allowLoopback: process.env.NODE_ENV !== 'production',
+  }),
   allowLocalhost: resolveAllowLocalhost(process.env),
 });
 

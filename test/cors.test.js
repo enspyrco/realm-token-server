@@ -413,6 +413,20 @@ test('Origin: null is never echoed, even if enrolled directly', async () => {
   }
 });
 
+// Refusing CORS_ALLOW_LOCALHOST in production but still enrolling an explicit
+// loopback origin there would leave the same hole at one port instead of all.
+test('requireAllowedOrigins refuses loopback origins when loopback is disallowed', () => {
+  for (const o of ['http://localhost:8080', 'http://127.0.0.1:3000', 'http://[::1]:5000']) {
+    assert.throws(
+      () => requireAllowedOrigins(o, { allowLoopback: false }),
+      InvalidAllowedOrigins,
+      o,
+    );
+    // ...and are still fine in dev, which is the default.
+    assert.deepEqual(requireAllowedOrigins(o), [o]);
+  }
+});
+
 test('parseAllowedOrigins trims and drops empties', () => {
   assert.deepEqual(
     parseAllowedOrigins(' https://a.example , ,https://b.example '),

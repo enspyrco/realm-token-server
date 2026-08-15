@@ -21,6 +21,10 @@
 // `:80`), IPv6 loopback included. Opt-in, and off in production.
 const LOCALHOST = /^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/;
 
+// Every name that reaches loopback, for the production refusal in
+// requireAllowedOrigins. 127.0.0.0/8 is all loopback, not just 127.0.0.1.
+const LOOPBACK_HOSTS = /^(localhost|127\.\d+\.\d+\.\d+|\[::1\])$/;
+
 function isAllowed(origin, allowedOrigins, allowLocalhost) {
   // Grounded here, not only in the env parser: `null` is what a sandboxed iframe
   // (and a file:// page) sends, so echoing it would admit every one of them. The
@@ -47,10 +51,11 @@ export function makeCorsMiddleware({ allowedOrigins = [], allowLocalhost = false
       res.setHeader('Access-Control-Allow-Origin', origin);
       res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
       res.setHeader('Access-Control-Allow-Headers', 'content-type, authorization');
-      // Short deliberately. A cached preflight lets a since-revoked origin keep
-      // reaching the handler (the browser blocks only the *reading* of the
-      // response), so this is the lag between revoking an origin and it going
-      // quiet. Ten minutes costs a preflight per origin per 10 min — nothing.
+      // Short, but do not treat 600 as a revocation budget: Chromium and Firefox
+      // decline to cache a preflight served with `no-store` (which this service
+      // sets on every response), so Max-Age is largely inert there, while Safari
+      // may honour it. The revocation that holds in every browser is the 403 on
+      // the real request below, not this number.
       res.setHeader('Access-Control-Max-Age', '600');
     }
 
@@ -116,7 +121,7 @@ export function parseAllowedOrigins(raw) {
  *    Origin a browser will ever send. An explicit default port (`:80`/`:443`)
  *    is rejected by the same rule, since browsers omit it.
  */
-export function requireAllowedOrigins(raw) {
+export function requireAllowedOrigins(raw, { allowLoopback = true } = {}) {
   const origins = parseAllowedOrigins(raw);
   if (origins.length === 0) {
     throw new InvalidAllowedOrigins('is empty — set at least one browser origin');
@@ -150,6 +155,16 @@ export function requireAllowedOrigins(raw) {
     if (/^\.|\.$|\.\./.test(url.hostname)) {
       throw new InvalidAllowedOrigins(
         `entry "${o}" has a malformed host "${url.hostname}" — no leading, trailing or doubled dots`,
+      );
+    }
+    // Closing CORS_ALLOW_LOCALHOST in production while still enrolling
+    // `http://localhost:8080` there would leave the same hole at one port
+    // instead of all of them: on a public mint, any page the operator's machine
+    // loads could read /exchange and /livekit-token. Three names reach loopback,
+    // so all three are refused.
+    if (!allowLoopback && LOOPBACK_HOSTS.test(url.hostname)) {
+      throw new InvalidAllowedOrigins(
+        `entry "${o}" is a loopback origin, which is refused when NODE_ENV=production`,
       );
     }
     // url.origin drops any path, trailing slash, and default port — so equality
