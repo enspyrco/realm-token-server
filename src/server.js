@@ -27,17 +27,19 @@ export function createApp({
   app.use(makeCorsMiddleware({ allowedOrigins, allowLocalhost }));
   app.use(express.json({ limit: '16kb' }));
 
-  // Both token responses carry a credential in their body. Without an explicit
-  // directive an intermediary may store and replay them; Caddy already fronts
-  // this service, so "no cache sits in front of it" is a fact about today only.
-  const noStore = (_req, res, next) => {
+  // Service-wide, not per-route: the token responses carry a credential in their
+  // body, and an intermediary may store and replay them (Caddy already fronts
+  // this service, so "nothing caches it" is a fact about today only). Applying
+  // it once here means a future route cannot forget it — which a per-route
+  // wiring, having to be remembered, eventually would.
+  app.use((_req, res, next) => {
     res.setHeader('Cache-Control', 'no-store');
     next();
-  };
+  });
 
   app.get('/healthz', (_req, res) => res.json({ ok: true }));
-  app.post('/exchange', noStore, makeExchangeHandler({ verifyProviderIdToken, privateKeyPem, ttlSeconds }));
-  app.post('/livekit-token', noStore, makeMintHandler({ publicKeyPem, mintLiveKitToken }));
+  app.post('/exchange', makeExchangeHandler({ verifyProviderIdToken, privateKeyPem, ttlSeconds }));
+  app.post('/livekit-token', makeMintHandler({ publicKeyPem, mintLiveKitToken }));
 
   return app;
 }

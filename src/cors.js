@@ -41,7 +41,11 @@ export function makeCorsMiddleware({ allowedOrigins = [], allowLocalhost = false
       res.setHeader('Access-Control-Allow-Origin', origin);
       res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
       res.setHeader('Access-Control-Allow-Headers', 'content-type, authorization');
-      res.setHeader('Access-Control-Max-Age', '86400');
+      // Short deliberately. A cached preflight lets a since-revoked origin keep
+      // reaching the handler (the browser blocks only the *reading* of the
+      // response), so this is the lag between revoking an origin and it going
+      // quiet. Ten minutes costs a preflight per origin per 10 min — nothing.
+      res.setHeader('Access-Control-Max-Age', '600');
     }
 
     // Preflight terminates here either way. A denied preflight returns 204
@@ -52,9 +56,13 @@ export function makeCorsMiddleware({ allowedOrigins = [], allowLocalhost = false
     // Non-preflight requests are never rejected on Origin. CORS is enforced by
     // the browser, and server-to-server callers (curl, the bot, health checks)
     // send no Origin at all — refusing here would break them while stopping no
-    // attacker, who can forge any Origin outside a browser anyway. A denied
-    // browser POST therefore still runs the handler; the browser just can't read
-    // the response.
+    // attacker, who can forge any Origin outside a browser anyway.
+    //
+    // What that means per caller: a browser's cross-origin JSON/bearer POST is
+    // stopped by its own preflight above, so the handler never runs for a denied
+    // origin. A non-browser caller, or a browser replaying a still-cached
+    // preflight, does reach the handler — it simply cannot read the response.
+    // Origin is a hint about provenance here, never admission.
     return next();
   };
 }
@@ -109,6 +117,18 @@ export function requireAllowedOrigins(raw) {
     }
     if (url.protocol !== 'http:' && url.protocol !== 'https:') {
       throw new InvalidAllowedOrigins(`entry "${o}" must be http(s)`);
+    }
+    // `new URL` happily accepts `https://*` and `https://*.example` — and both
+    // survive the Origin-form check below, because their `origin` round-trips
+    // unchanged. They match no Origin a browser will ever send, so an operator
+    // reaching for a wildcard subdomain would boot green and break web exactly
+    // as if CORS were absent. There is no wildcard support here by design; say
+    // so at boot rather than at 3am. Hostname is already punycode-normalised, so
+    // a real host is [a-z0-9.-] (or a bracketed IPv6 literal).
+    if (!/^[a-z0-9.-]+$/.test(url.hostname) && !/^\[[0-9a-f:]+\]$/.test(url.hostname)) {
+      throw new InvalidAllowedOrigins(
+        `entry "${o}" has an invalid host "${url.hostname}" — wildcards are not supported; list each origin`,
+      );
     }
     // url.origin drops any path, trailing slash, and default port — so equality
     // is an exact "this is already in Origin-header form" check.

@@ -143,6 +143,11 @@ test('localhost is rejected by default and accepted only when opted in', async (
 // whose name merely contains "localhost" has to stay out.
 test('localhost opt-in does not admit lookalike hosts', async () => {
   for (const origin of [
+    // http:// on purpose — the opt-in regex only admits http, so an https
+    // lookalike is excluded by scheme and would not exercise the anchor at all.
+    'http://localhost.evil.example',
+    'http://127.0.0.1.evil.example',
+    'http://localhost.evil.example:8080',
     'https://localhost.evil.example',
     'http://evil.example',
     'http://notlocalhost:8080',
@@ -196,14 +201,32 @@ test('POST /livekit-token from a disallowed origin omits the header', async () =
 });
 
 // Both token responses carry a credential in the body; an intermediary must not
-// store and replay them.
+// store and replay them. The mint response is the one an intermediary would
+// replay into a room, so it is asserted too — not just /exchange.
 test('token responses are marked no-store', async () => {
-  const res = await fetch(`${base}/exchange`, {
+  const exchange = await fetch(`${base}/exchange`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', origin: ALLOWED },
     body: JSON.stringify({ idToken: 'good' }),
   });
-  assert.match(res.headers.get('cache-control'), /no-store/);
+  assert.match(exchange.headers.get('cache-control'), /no-store/);
+
+  const cred = issueRealmCredential(keys.privateKeyPem, {
+    subject: 'user-1',
+    provider: 'google',
+    ttlSeconds: 60,
+  });
+  const mint = await fetch(`${base}/livekit-token`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      origin: ALLOWED,
+      authorization: `Bearer ${cred.token}`,
+    },
+    body: JSON.stringify({ roomName: 'room-1' }),
+  });
+  assert.equal(mint.status, 200);
+  assert.match(mint.headers.get('cache-control'), /no-store/);
 });
 
 // Vary must survive a peer that also varies. setHeader('Vary','Origin') would
@@ -244,6 +267,15 @@ test('requireAllowedOrigins rejects present-but-unusable values', () => {
 test('requireAllowedOrigins rejects wildcard and null', () => {
   assert.throws(() => requireAllowedOrigins('*'), InvalidAllowedOrigins);
   assert.throws(() => requireAllowedOrigins('null'), InvalidAllowedOrigins);
+});
+
+// These are the wildcards that survive Origin-form validation: `new URL()`
+// accepts them and their origin round-trips unchanged, so only an explicit host
+// check keeps them out. An operator told "no `*`" reaches for these next.
+test('requireAllowedOrigins rejects Origin-form wildcards', () => {
+  assert.throws(() => requireAllowedOrigins('https://*'), InvalidAllowedOrigins);
+  assert.throws(() => requireAllowedOrigins('https://*.imagineering.cc'), InvalidAllowedOrigins);
+  assert.throws(() => requireAllowedOrigins('http://*.localhost'), InvalidAllowedOrigins);
 });
 
 test('requireAllowedOrigins rejects anything not in Origin form', () => {
