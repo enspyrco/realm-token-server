@@ -148,14 +148,34 @@ should not redeploy itself on merge. Switching to reactive CD later (the
 `cd-bus` fleet template in `enspyrco/infra`) means pointing the compose `image:`
 at a moving tag — a one-line change, not a rework.
 
-### One-time host setup
+### Registry auth
 
-The registry is private, so the host needs a GHCR read token:
+The package is **private**, so a pull needs credentials. The host stores none:
+the deploy pipes a short-lived token in over stdin and logs out immediately, so
+no credential is left behind and nothing has to be rotated.
 
 ```bash
-echo "$GHCR_READ_PAT" | docker login ghcr.io -u <github-user> --password-stdin
+gh auth token | ssh <box> '
+  cd ~/apps/realm-token-server
+  docker login ghcr.io -u <github-user> --password-stdin
+  docker compose pull realm-token-server
+  docker logout ghcr.io
+'
 ```
+
+Making the package **public** would remove this step entirely — it is how every
+other GHCR service on that box works (`downstream-server`, `aiko-chat-island`
+are both public packages and the host holds no docker credentials at all). The
+image carries no secrets: config is injected as env and `/app` contains only
+`src`, `node_modules`, and the package files. Package visibility can only be
+changed in the GitHub UI — there is no REST or GraphQL endpoint for it
+(checked) — so it stays private until someone flips it at
+`https://github.com/orgs/enspyrco/packages/container/realm-token-server/settings`.
+
+### Host prerequisites
 
 The box's `.env` must contain every variable in `.env.example` — including
 `CORS_ALLOWED_ORIGINS`, which is required at startup. A container that boots
-without it exits immediately rather than serving a web-broken deployment.
+without it exits immediately rather than serving a web-broken deployment. The
+Dockerfile sets `NODE_ENV=production`, so allowlist entries must be https DNS
+names.
