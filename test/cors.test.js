@@ -416,10 +416,10 @@ test('Origin: null is never echoed, even if enrolled directly', async () => {
 
 // Refusing CORS_ALLOW_LOCALHOST in production but still enrolling an explicit
 // loopback origin there would leave the same hole at one port instead of all.
-test('requireAllowedOrigins refuses loopback origins when loopback is disallowed', () => {
+test('requireAllowedOrigins refuses loopback origins in production', () => {
   for (const o of ['http://localhost:8080', 'http://127.0.0.1:3000', 'http://[::1]:5000']) {
     assert.throws(
-      () => requireAllowedOrigins(o, { allowLoopback: false }),
+      () => requireAllowedOrigins(o, { production: true }),
       InvalidAllowedOrigins,
       o,
     );
@@ -442,6 +442,17 @@ test('corsConfigFromEnv closes both doors under NODE_ENV=production', () => {
     'http://app.localhost:8080',
     'http://0.0.0.0:8080',
     'http://world.imagineering.cc', // plaintext downgrade of the real origin
+    // https does NOT imply not-loopback. Every one of these is a valid https
+    // origin and every one is the local machine — the exact set two successive
+    // denylists missed.
+    'https://localhost:8080',
+    'https://app.localhost:8080',
+    'https://[::1]:5000',
+    'https://[::ffff:7f00:1]:8080',
+    'https://[::ffff:127.0.0.1]:8080',
+    'https://127.0.0.1:3000',
+    'https://0.0.0.0:8080',
+    'https://192.168.1.10:8080', // an IP literal is never a real browser origin
   ]) {
     assert.throws(
       () => corsConfigFromEnv({ NODE_ENV: 'production', CORS_ALLOWED_ORIGINS: o }),

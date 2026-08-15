@@ -1,3 +1,5 @@
+import net from 'node:net';
+
 // CORS for the browser clients. The deployed target is Flutter *web*, so both
 // endpoints are cross-origin from the app's hosting domain and unreachable
 // without these headers — a same-origin-only server silently breaks web while
@@ -21,9 +23,20 @@
 // `:80`), IPv6 loopback included. Opt-in, and off in production.
 const LOCALHOST = /^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/;
 
-// Every name that reaches loopback, for the production refusal in
-// requireAllowedOrigins. 127.0.0.0/8 is all loopback, not just 127.0.0.1.
-const LOOPBACK_HOSTS = /^(localhost|127\.\d+\.\d+\.\d+|\[::1\])$/;
+// What a production browser origin IS, rather than a list of what it must not
+// be. Two prior attempts enumerated loopback aliases and both were incomplete —
+// `app.localhost` (RFC 6761 makes every name under .localhost loopback),
+// `[::ffff:7f00:1]`, `0.0.0.0` — and requiring https did not save it, since all
+// three are perfectly valid over https. Enumeration loses this race by
+// construction, so state the requirement instead: a real deployment's origin is
+// a DNS name, never an IP literal, and never under .localhost.
+function isProductionUnsafeHost(hostname) {
+  const bare = hostname.startsWith('[') ? hostname.slice(1, -1) : hostname;
+  // Any IP literal, v4 or v6, in either notation — net.isIP normalises what a
+  // regex kept missing (`::ffff:7f00:1` and `::ffff:127.0.0.1` are one address).
+  if (net.isIP(bare)) return true;
+  return hostname === 'localhost' || hostname.endsWith('.localhost');
+}
 
 function isAllowed(origin, allowedOrigins, allowLocalhost) {
   // Grounded here, not only in the env parser: `null` is what a sandboxed iframe
@@ -121,7 +134,7 @@ export function parseAllowedOrigins(raw) {
  *    Origin a browser will ever send. An explicit default port (`:80`/`:443`)
  *    is rejected by the same rule, since browsers omit it.
  */
-export function requireAllowedOrigins(raw, { allowLoopback = true, requireHttps = false } = {}) {
+export function requireAllowedOrigins(raw, { production = false } = {}) {
   const origins = parseAllowedOrigins(raw);
   if (origins.length === 0) {
     throw new InvalidAllowedOrigins('is empty — set at least one browser origin');
@@ -157,24 +170,18 @@ export function requireAllowedOrigins(raw, { allowLoopback = true, requireHttps 
         `entry "${o}" has a malformed host "${url.hostname}" — no leading, trailing or doubled dots`,
       );
     }
-    // THE production rule, and deliberately a requirement rather than a ban.
-    // Enumerating what loopback can be called is unwinnable — `localhost`,
-    // `127.0.0.0/8`, `[::1]`, `[::ffff:7f00:1]`, `app.localhost`, `0.0.0.0` are
-    // all the same machine, and the list keeps growing. Every one of them is
-    // `http:`, so requiring https in production closes the whole family at once,
-    // and closes the plaintext-downgrade footgun (`http://world.imagineering.cc`)
-    // in the same stroke.
-    if (requireHttps && url.protocol !== 'https:') {
+    // Production origins are https DNS names. Both halves are required and
+    // neither implies the other: https alone still admits `https://app.localhost`
+    // and `https://[::ffff:7f00:1]`, and the host rule alone would still admit a
+    // plaintext downgrade of the real origin.
+    if (production && url.protocol !== 'https:') {
       throw new InvalidAllowedOrigins(
         `entry "${o}" must be https when NODE_ENV=production`,
       );
     }
-    // Secondary, and only load-bearing in dev-shaped configs (where https is not
-    // required): keeps an obviously-wrong loopback entry out of a non-production
-    // deployment. In production the https rule above has already refused it.
-    if (!allowLoopback && LOOPBACK_HOSTS.test(url.hostname)) {
+    if (production && isProductionUnsafeHost(url.hostname)) {
       throw new InvalidAllowedOrigins(
-        `entry "${o}" is a loopback origin, which is refused when NODE_ENV=production`,
+        `entry "${o}" is a loopback or IP-literal origin, which is refused when NODE_ENV=production`,
       );
     }
     // url.origin drops any path, trailing slash, and default port — so equality
@@ -216,8 +223,7 @@ export function corsConfigFromEnv(env = {}) {
   const isProduction = env.NODE_ENV === 'production';
   return {
     allowedOrigins: requireAllowedOrigins(env.CORS_ALLOWED_ORIGINS, {
-      requireHttps: isProduction,
-      allowLoopback: !isProduction,
+      production: isProduction,
     }),
     allowLocalhost: resolveAllowLocalhost(env),
   };

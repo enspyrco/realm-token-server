@@ -56,13 +56,16 @@ random port per run.
 When `NODE_ENV=production` (which the Dockerfile sets), two rules apply, both
 resolved in one place — `corsConfigFromEnv` in `src/cors.js`:
 
-1. **Every allowlisted origin must be `https`.** This is stated as a requirement
-   rather than a list of banned things on purpose. Loopback has more names than
-   anyone enumerates — `localhost`, `127.0.0.0/8`, `[::1]`, `[::ffff:7f00:1]`,
-   `app.localhost`, `0.0.0.0` — and a denylist of them loses that race forever.
-   All of them are `http`, so requiring `https` closes the whole family at once,
-   and closes the plaintext-downgrade footgun (`http://world.imagineering.cc`)
-   with the same rule.
+1. **Every allowlisted origin must be an `https` DNS name.** Both halves are
+   required and neither implies the other. `https` alone still admits
+   `https://app.localhost` and `https://[::ffff:7f00:1]`; the host rule alone
+   would still admit a plaintext downgrade of the real origin
+   (`http://world.imagineering.cc`). The host rule is stated as a requirement —
+   *a real deployment's origin is a DNS name* — rather than as a denylist of
+   loopback aliases, because loopback has more names than anyone enumerates
+   (`localhost`, `127.0.0.0/8`, `[::1]`, `[::ffff:7f00:1]`, `app.localhost` per
+   RFC 6761, `0.0.0.0`) and two successive denylists here were both incomplete.
+   IP literals in either family are refused outright via `net.isIP`.
 2. **`CORS_ALLOW_LOCALHOST=true` is refused outright**, because the opt-in admits
    any port on loopback — harmless on a laptop, and on a public mint it would let
    any page a developer's machine loads read `/exchange` and `/livekit-token`.
