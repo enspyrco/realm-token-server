@@ -1,7 +1,7 @@
 import { createApp } from './server.js';
 import { verifyFirebaseIdToken } from './firebase.js';
 import { makeLiveKitMinter } from './livekit.js';
-import { parseAllowedOrigins } from './cors.js';
+import { requireAllowedOrigins } from './cors.js';
 
 function requireEnv(name) {
   const v = process.env[name];
@@ -22,7 +22,7 @@ const app = createApp({
     apiSecret: requireEnv('LIVEKIT_API_SECRET'),
   }),
   ttlSeconds: Number(process.env.REALM_CREDENTIAL_TTL_SECONDS || 3600),
-  allowedOrigins: parseAllowedOrigins(requireEnv('CORS_ALLOWED_ORIGINS')),
+  allowedOrigins: requireAllowedOrigins(requireEnv('CORS_ALLOWED_ORIGINS')),
   allowLocalhost: process.env.CORS_ALLOW_LOCALHOST === 'true',
 });
 

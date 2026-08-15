@@ -50,8 +50,21 @@ The deployed client is Flutter **web**, so both endpoints are cross-origin and
 unreachable from the browser without CORS headers — while curl and the native
 builds keep working, which is how this failure hides. `CORS_ALLOWED_ORIGINS` is
 a **required**, comma-separated, exact-match allowlist (`src/cors.js`); never
-`*`, because callers send a bearer credential. Set `CORS_ALLOW_LOCALHOST=true`
-in dev only — Flutter's dev server picks a random port per run.
+`*`. Set `CORS_ALLOW_LOCALHOST=true` in dev only — Flutter's dev server picks a
+random port per run.
+
+Entries are validated at boot: each must be exactly `scheme://host[:port]`, and
+`*`, `null`, a trailing slash, a path, or an explicit default port are all
+rejected with the offending value named. Every one of those matches no `Origin`
+a browser will ever send, so accepting them would boot a server that is green on
+`/healthz`, fine under curl, and dead in the browser — the precise failure this
+allowlist exists to remove.
+
+The exact-match rule is defence in depth rather than the only thing standing
+between a page and a session: the bearer credential is not ambient authority, so
+unlike a cookie a hostile origin cannot make the browser attach it. What the
+allowlist buys is denying cross-origin reconnaissance, and staying correct if
+this service ever gains a cookie or `Access-Control-Allow-Credentials`.
 
 ## Contract parity
 

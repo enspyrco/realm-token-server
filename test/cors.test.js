@@ -1,8 +1,16 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 
+import express from 'express';
+
 import { createApp } from '../src/server.js';
-import { parseAllowedOrigins } from '../src/cors.js';
+import {
+  parseAllowedOrigins,
+  requireAllowedOrigins,
+  InvalidAllowedOrigins,
+  makeCorsMiddleware,
+} from '../src/cors.js';
+import { issueRealmCredential } from '../src/realmCredential.js';
 import { es256Keys } from './helpers.js';
 
 const keys = es256Keys();
@@ -144,6 +152,125 @@ test('localhost opt-in does not admit lookalike hosts', async () => {
       headers: { origin, 'access-control-request-method': 'POST' },
     });
     assert.equal(res.headers.get('access-control-allow-origin'), null, origin);
+  }
+});
+
+// The mint response is the one whose absence IS "LiveKit never connected", so
+// assert its real (non-preflight) response carries the header — a preflight-only
+// test would stay green through a regression that only broke this path.
+test('POST /livekit-token echoes the allowed origin on the real response', async () => {
+  const cred = issueRealmCredential(keys.privateKeyPem, {
+    subject: 'user-1',
+    provider: 'google',
+    ttlSeconds: 60,
+  });
+  const res = await fetch(`${base}/livekit-token`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      origin: ALLOWED,
+      authorization: `Bearer ${cred.token}`,
+    },
+    body: JSON.stringify({ roomName: 'room-1' }),
+  });
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('access-control-allow-origin'), ALLOWED);
+});
+
+test('POST /livekit-token from a disallowed origin omits the header', async () => {
+  const cred = issueRealmCredential(keys.privateKeyPem, {
+    subject: 'user-1',
+    provider: 'google',
+    ttlSeconds: 60,
+  });
+  const res = await fetch(`${base}/livekit-token`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      origin: 'https://evil.example',
+      authorization: `Bearer ${cred.token}`,
+    },
+    body: JSON.stringify({ roomName: 'room-1' }),
+  });
+  assert.equal(res.headers.get('access-control-allow-origin'), null);
+});
+
+// Both token responses carry a credential in the body; an intermediary must not
+// store and replay them.
+test('token responses are marked no-store', async () => {
+  const res = await fetch(`${base}/exchange`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', origin: ALLOWED },
+    body: JSON.stringify({ idToken: 'good' }),
+  });
+  assert.match(res.headers.get('cache-control'), /no-store/);
+});
+
+// Vary must survive a peer that also varies. setHeader('Vary','Origin') would
+// have silently deleted Accept-Encoding here; res.vary() merges. RED-proving
+// this needs a real upstream middleware, so mount the CORS middleware directly.
+test('Vary: Origin appends rather than replacing an existing value', async () => {
+  const peerApp = express();
+  peerApp.use((_req, res, next) => {
+    res.setHeader('Vary', 'Accept-Encoding'); // stand-in for compression
+    next();
+  });
+  peerApp.use(makeCorsMiddleware({ allowedOrigins: [ALLOWED] }));
+  peerApp.get('/probe', (_req, res) => res.json({ ok: true }));
+
+  const srv = peerApp.listen(0);
+  await new Promise((r) => srv.once('listening', r));
+  try {
+    const res = await fetch(`http://localhost:${srv.address().port}/probe`, {
+      headers: { origin: ALLOWED },
+    });
+    const vary = res.headers.get('vary');
+    assert.match(vary, /Accept-Encoding/i);
+    assert.match(vary, /Origin/i);
+  } finally {
+    await new Promise((r) => srv.close(r));
+  }
+});
+
+// Every rejected value below parses to an allowlist that matches nothing, which
+// at runtime is indistinguishable from having no CORS at all — the silent
+// web-only breakage this module exists to remove. Fail at boot instead.
+test('requireAllowedOrigins rejects present-but-unusable values', () => {
+  for (const raw of ['', '   ', ',,,', ' , ']) {
+    assert.throws(() => requireAllowedOrigins(raw), InvalidAllowedOrigins, `expected throw for ${JSON.stringify(raw)}`);
+  }
+});
+
+test('requireAllowedOrigins rejects wildcard and null', () => {
+  assert.throws(() => requireAllowedOrigins('*'), InvalidAllowedOrigins);
+  assert.throws(() => requireAllowedOrigins('null'), InvalidAllowedOrigins);
+});
+
+test('requireAllowedOrigins rejects anything not in Origin form', () => {
+  // A trailing slash is what you get copying from a browser address bar, and it
+  // can never equal an Origin header.
+  assert.throws(() => requireAllowedOrigins('https://world.imagineering.cc/'), InvalidAllowedOrigins);
+  assert.throws(() => requireAllowedOrigins('https://world.imagineering.cc/path'), InvalidAllowedOrigins);
+  // Browsers omit default ports, so an explicit one would never match either.
+  assert.throws(() => requireAllowedOrigins('https://world.imagineering.cc:443'), InvalidAllowedOrigins);
+  assert.throws(() => requireAllowedOrigins('ftp://world.imagineering.cc'), InvalidAllowedOrigins);
+  assert.throws(() => requireAllowedOrigins('world.imagineering.cc'), InvalidAllowedOrigins);
+});
+
+test('requireAllowedOrigins accepts well-formed origins', () => {
+  assert.deepEqual(
+    requireAllowedOrigins('https://world.imagineering.cc, http://localhost:8080'),
+    ['https://world.imagineering.cc', 'http://localhost:8080'],
+  );
+});
+
+test('localhost opt-in covers a default port and IPv6 loopback', async () => {
+  for (const origin of ['http://localhost', 'http://[::1]:5000', 'http://127.0.0.1:3000']) {
+    const res = await fetch(`${localhostBase}/exchange`, {
+      method: 'OPTIONS',
+      headers: { origin, 'access-control-request-method': 'POST' },
+    });
+    assert.equal(res.headers.get('access-control-allow-origin'), origin, origin);
   }
 });
 

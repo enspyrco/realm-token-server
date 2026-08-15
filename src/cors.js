@@ -3,17 +3,23 @@
 // without these headers — a same-origin-only server silently breaks web while
 // macOS/mobile keep working.
 //
-// Exact-match allowlist, never `*`: this is an auth boundary and callers send a
-// bearer credential. `*` would let any page on the internet spend a signed-in
-// user's session.
+// Exact-match allowlist, never `*`. Note what this does and does not buy: the
+// bearer credential is NOT ambient authority (unlike a cookie, a hostile page
+// cannot make the browser attach it), so `*` would not by itself let evil.com
+// spend a signed-in session — it would still need to steal the token. What an
+// allowlist does buy is defence in depth: it denies cross-origin reconnaissance
+// against an auth boundary, and it stays correct if this service ever gains a
+// cookie or `Access-Control-Allow-Credentials`, at which point `*` becomes an
+// actual account-takeover vector rather than a theoretical one.
 //
 // No `Access-Control-Allow-Credentials`: the client authenticates with an
 // `Authorization` header, not cookies, so the credentialed-request mode is not
 // needed and enabling it would only widen what a permitted origin can do.
 
 // Flutter's dev server picks a random port per run, so dev origins can't be
-// enumerated ahead of time. Opt-in, and off in production.
-const LOCALHOST = /^http:\/\/(localhost|127\.0\.0\.1):\d+$/;
+// enumerated ahead of time. Port optional (a default-port dev server sends no
+// `:80`), IPv6 loopback included. Opt-in, and off in production.
+const LOCALHOST = /^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/;
 
 function isAllowed(origin, allowedOrigins, allowLocalhost) {
   if (allowedOrigins.includes(origin)) return true;
@@ -24,10 +30,12 @@ export function makeCorsMiddleware({ allowedOrigins = [], allowLocalhost = false
   return function cors(req, res, next) {
     const origin = req.get('origin');
 
-    // `Vary: Origin` regardless of the verdict: the response body/headers differ
-    // per origin, so a shared cache must not serve one origin's response to
-    // another. Set even on a denial, since the denial is itself origin-specific.
-    res.setHeader('Vary', 'Origin');
+    // `res.vary()` APPENDS; `setHeader('Vary', …)` would replace. The response
+    // differs per origin, so a shared cache must not serve one origin's response
+    // to another — and that guarantee has to survive any other middleware that
+    // also varies (compression sets `Vary: Accept-Encoding`). Set even on a
+    // denial, since the denial is itself origin-specific.
+    res.vary('Origin');
 
     if (origin && isAllowed(origin, allowedOrigins, allowLocalhost)) {
       res.setHeader('Access-Control-Allow-Origin', origin);
@@ -44,15 +52,69 @@ export function makeCorsMiddleware({ allowedOrigins = [], allowLocalhost = false
     // Non-preflight requests are never rejected on Origin. CORS is enforced by
     // the browser, and server-to-server callers (curl, the bot, health checks)
     // send no Origin at all — refusing here would break them while stopping no
-    // attacker, who can forge any Origin outside a browser anyway.
+    // attacker, who can forge any Origin outside a browser anyway. A denied
+    // browser POST therefore still runs the handler; the browser just can't read
+    // the response.
     return next();
   };
 }
 
-// Parses the comma-separated CORS_ALLOWED_ORIGINS env value.
+/**
+ * Thrown at startup when CORS_ALLOWED_ORIGINS is unusable. Boot-time and loud:
+ * every malformed value below parses to an allowlist that matches nothing, which
+ * is indistinguishable at runtime from having no CORS at all — the silent
+ * web-only breakage this module exists to remove.
+ */
+export class InvalidAllowedOrigins extends Error {
+  constructor(reason) {
+    super(`CORS_ALLOWED_ORIGINS ${reason}`);
+    this.name = 'InvalidAllowedOrigins';
+  }
+}
+
+// Splits the comma-separated env value. Shape validation is the caller's job
+// (requireAllowedOrigins) so this stays a pure parser.
 export function parseAllowedOrigins(raw) {
   return (raw || '')
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
+}
+
+/**
+ * Parses AND validates the CORS_ALLOWED_ORIGINS env value, throwing rather than
+ * booting a server that will refuse every browser it was deployed to serve.
+ *
+ * Rejects, with the offending value named:
+ *  - nothing usable (`""`, `"  "`, `",,,"`) — present-but-empty is the failure
+ *    `requireEnv` alone cannot see;
+ *  - `*` and `null` — neither can ever equal a real Origin here, and `null` in
+ *    an allowlist would admit every sandboxed iframe;
+ *  - anything that is not exactly `scheme://host[:port]` — a trailing slash or
+ *    path (`https://x.example/`, straight off a browser address bar) matches no
+ *    Origin a browser will ever send. An explicit default port (`:80`/`:443`)
+ *    is rejected by the same rule, since browsers omit it.
+ */
+export function requireAllowedOrigins(raw) {
+  const origins = parseAllowedOrigins(raw);
+  if (origins.length === 0) {
+    throw new InvalidAllowedOrigins('is empty — set at least one browser origin');
+  }
+  for (const o of origins) {
+    let url;
+    try {
+      url = new URL(o);
+    } catch {
+      throw new InvalidAllowedOrigins(`entry "${o}" is not a valid origin (want scheme://host[:port])`);
+    }
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      throw new InvalidAllowedOrigins(`entry "${o}" must be http(s)`);
+    }
+    // url.origin drops any path, trailing slash, and default port — so equality
+    // is an exact "this is already in Origin-header form" check.
+    if (url.origin !== o) {
+      throw new InvalidAllowedOrigins(`entry "${o}" is not in Origin form — use "${url.origin}"`);
+    }
+  }
+  return origins;
 }

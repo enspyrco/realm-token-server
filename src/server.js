@@ -20,14 +20,24 @@ export function createApp({
   allowLocalhost = false,
 }) {
   const app = express();
-  // Before the body parser: a preflight carries no body, and a denied origin
-  // should not reach the parser at all.
+  // Before the body parser so a preflight never pays for JSON parsing it has no
+  // body for. Note it does NOT stop a disallowed origin from reaching the
+  // handlers: CORS is browser-enforced, so a denied cross-origin POST still runs
+  // and is merely unreadable by the caller (see the comment in cors.js).
   app.use(makeCorsMiddleware({ allowedOrigins, allowLocalhost }));
   app.use(express.json({ limit: '16kb' }));
 
+  // Both token responses carry a credential in their body. Without an explicit
+  // directive an intermediary may store and replay them; Caddy already fronts
+  // this service, so "no cache sits in front of it" is a fact about today only.
+  const noStore = (_req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store');
+    next();
+  };
+
   app.get('/healthz', (_req, res) => res.json({ ok: true }));
-  app.post('/exchange', makeExchangeHandler({ verifyProviderIdToken, privateKeyPem, ttlSeconds }));
-  app.post('/livekit-token', makeMintHandler({ publicKeyPem, mintLiveKitToken }));
+  app.post('/exchange', noStore, makeExchangeHandler({ verifyProviderIdToken, privateKeyPem, ttlSeconds }));
+  app.post('/livekit-token', noStore, makeMintHandler({ publicKeyPem, mintLiveKitToken }));
 
   return app;
 }
