@@ -33,7 +33,13 @@ export function makeRateLimiter({
   // Availability is the right direction here because the global limiter below
   // cannot be churned at all, and it is the one holding the quota ceiling.
   maxKeys = 4096,
-  now = Date.now,
+  // MONOTONIC, not wall-clock. Every window here is a duration, never a date,
+  // and Date.now() steps: an NTP correction backwards extends a live window by
+  // the size of the step, locking a caller out for as long as the jump lasted,
+  // and a step forwards ends every window early. performance.now() counts from
+  // process start and cannot be stepped, which removes the failure rather than
+  // bounding it. Nothing in this module is ever compared against a wall time.
+  now = () => performance.now(),
   // A constant key makes this same primitive the global limiter. Per-IP and
   // service-wide are the same counter with a different notion of "who".
   key = (req) => req.ip,

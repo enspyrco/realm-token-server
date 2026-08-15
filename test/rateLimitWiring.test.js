@@ -20,13 +20,13 @@ async function fakeVerify() { throw new Error('bad token'); }
 async function fakeMint({ identity, roomName }) { return `lk-token:${identity}:${roomName}`; }
 
 // A frozen clock, so no test can flake by straddling a window boundary.
-function buildApp({ trustProxyHops = 0 } = {}) {
+function buildApp({ trustProxyHops = 0, allowedOrigins = [] } = {}) {
   return createApp({
     verifyProviderIdToken: fakeVerify,
     privateKeyPem: keys.privateKeyPem,
     publicKeyPem: keys.publicKeyPem,
     mintLiveKitToken: fakeMint,
-    allowedOrigins: [],
+    allowedOrigins,
     trustProxyHops,
     now: () => 1_000_000,
     log: () => {},
@@ -158,6 +158,27 @@ test('the global ceiling is shared across both mint routes', async () => {
     // "service-wide" ceiling is two independent ceilings wearing one name.
     const refused = await post(base, '/livekit-token', { forwardedFor: '198.51.100.9' });
     assert.equal(refused.status, 429);
+  });
+});
+
+test('a 429 is readable by the browser it was sent to', async () => {
+  const origin = 'https://world.example';
+  await withServer({ allowedOrigins: [origin] }, async (base) => {
+    let res;
+    for (let i = 0; i < 31; i += 1) {
+      res = await fetch(`${base}/exchange`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', Origin: origin },
+        body: '{}',
+      });
+    }
+    assert.equal(res.status, 429);
+    // Without this header the browser reports an opaque CORS error instead of
+    // "rate limited", and a throttled web client cannot tell being limited from
+    // being broken — which is the whole difference between a throttle the client
+    // can back off from and an outage it cannot explain.
+    assert.equal(res.headers.get('access-control-allow-origin'), origin);
+    assert.ok(res.headers.get('retry-after'));
   });
 });
 

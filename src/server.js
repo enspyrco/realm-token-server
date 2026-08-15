@@ -45,7 +45,9 @@ export function createApp({
   // from the environment via resolveTrustProxyHops, which refuses to guess in
   // production. See rateLimit.js for why both wrong values fail silently.
   trustProxyHops = 0,
-  now = Date.now,
+  // Left undefined so rateLimit.js's monotonic default applies; tests inject a
+  // frozen clock so no assertion can straddle a window boundary.
+  now,
 }) {
   // Required, not defaulted. A default of [] builds a server that is green on
   // /healthz, fine under curl, and refuses every honest browser — the silent
