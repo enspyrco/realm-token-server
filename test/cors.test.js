@@ -9,6 +9,7 @@ import {
   requireAllowedOrigins,
   InvalidAllowedOrigins,
   makeCorsMiddleware,
+  resolveAllowLocalhost,
 } from '../src/cors.js';
 import { issueRealmCredential } from '../src/realmCredential.js';
 import { es256Keys } from './helpers.js';
@@ -304,6 +305,47 @@ test('localhost opt-in covers a default port and IPv6 loopback', async () => {
     });
     assert.equal(res.headers.get('access-control-allow-origin'), origin, origin);
   }
+});
+
+// The preflight short-circuits inside the CORS middleware, so anything mounted
+// after it never sees an OPTIONS — and the preflight is the response class most
+// designed to be cached.
+test('the preflight response is also marked no-store', async () => {
+  const res = await fetch(`${base}/exchange`, {
+    method: 'OPTIONS',
+    headers: { origin: ALLOWED, 'access-control-request-method': 'POST' },
+  });
+  assert.equal(res.status, 204);
+  assert.match(res.headers.get('cache-control'), /no-store/);
+});
+
+// Closes the honest-browser window: a preflight cached from before an origin was
+// revoked, or a simple request that never triggered one.
+test('a present but disallowed Origin is refused outright', async () => {
+  const res = await fetch(`${base}/exchange`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', origin: 'https://evil.example' },
+    body: JSON.stringify({ idToken: 'good' }),
+  });
+  assert.equal(res.status, 403);
+  assert.equal(res.headers.get('access-control-allow-origin'), null);
+});
+
+// ...without breaking any non-browser caller, which is the whole reason Origin
+// is not treated as authentication.
+test('an absent Origin is still served normally after the refusal rule', async () => {
+  const res = await fetch(`${base}/healthz`);
+  assert.equal(res.status, 200);
+});
+
+test('resolveAllowLocalhost refuses the opt-in in production', () => {
+  assert.throws(
+    () => resolveAllowLocalhost({ CORS_ALLOW_LOCALHOST: 'true', NODE_ENV: 'production' }),
+    /refused when NODE_ENV=production/,
+  );
+  assert.equal(resolveAllowLocalhost({ CORS_ALLOW_LOCALHOST: 'true' }), true);
+  assert.equal(resolveAllowLocalhost({ NODE_ENV: 'production' }), false);
+  assert.equal(resolveAllowLocalhost({}), false);
 });
 
 test('parseAllowedOrigins trims and drops empties', () => {

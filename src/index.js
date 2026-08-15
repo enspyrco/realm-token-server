@@ -1,7 +1,7 @@
 import { createApp } from './server.js';
 import { verifyFirebaseIdToken } from './firebase.js';
 import { makeLiveKitMinter } from './livekit.js';
-import { requireAllowedOrigins } from './cors.js';
+import { requireAllowedOrigins, resolveAllowLocalhost } from './cors.js';
 
 function requireEnv(name) {
   const v = process.env[name];
@@ -11,6 +11,7 @@ function requireEnv(name) {
 
 // PEM env vars may arrive with literal "\n" (e.g. from a single-line secret store).
 const pem = (name) => requireEnv(name).replace(/\\n/g, '\n');
+
 
 const app = createApp({
   verifyProviderIdToken: verifyFirebaseIdToken,
@@ -23,7 +24,7 @@ const app = createApp({
   }),
   ttlSeconds: Number(process.env.REALM_CREDENTIAL_TTL_SECONDS || 3600),
   allowedOrigins: requireAllowedOrigins(requireEnv('CORS_ALLOWED_ORIGINS')),
-  allowLocalhost: process.env.CORS_ALLOW_LOCALHOST === 'true',
+  allowLocalhost: resolveAllowLocalhost(process.env),
 });
 
 const port = Number(process.env.PORT || 8080);

@@ -20,22 +20,21 @@ export function createApp({
   allowLocalhost = false,
 }) {
   const app = express();
-  // Before the body parser so a preflight never pays for JSON parsing it has no
-  // body for. Note it does NOT stop a disallowed origin from reaching the
-  // handlers: CORS is browser-enforced, so a denied cross-origin POST still runs
-  // and is merely unreadable by the caller (see the comment in cors.js).
-  app.use(makeCorsMiddleware({ allowedOrigins, allowLocalhost }));
-  app.use(express.json({ limit: '16kb' }));
 
-  // Service-wide, not per-route: the token responses carry a credential in their
-  // body, and an intermediary may store and replay them (Caddy already fronts
-  // this service, so "nothing caches it" is a fact about today only). Applying
-  // it once here means a future route cannot forget it — which a per-route
-  // wiring, having to be remembered, eventually would.
+  // FIRST, ahead of CORS: the preflight short-circuits with a 204 inside the
+  // CORS middleware, so anything mounted after it never sees an OPTIONS. A
+  // preflight is the one response class designed to be cached, which makes it
+  // the one that most needs the directive. Service-wide rather than per-route so
+  // a future route cannot forget it.
   app.use((_req, res, next) => {
     res.setHeader('Cache-Control', 'no-store');
     next();
   });
+
+  // Before the body parser so a preflight never pays for JSON parsing it has no
+  // body for.
+  app.use(makeCorsMiddleware({ allowedOrigins, allowLocalhost }));
+  app.use(express.json({ limit: '16kb' }));
 
   app.get('/healthz', (_req, res) => res.json({ ok: true }));
   app.post('/exchange', makeExchangeHandler({ verifyProviderIdToken, privateKeyPem, ttlSeconds }));

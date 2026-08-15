@@ -53,6 +53,18 @@ a **required**, comma-separated, exact-match allowlist (`src/cors.js`); never
 `*`. Set `CORS_ALLOW_LOCALHOST=true` in dev only — Flutter's dev server picks a
 random port per run.
 
+`CORS_ALLOW_LOCALHOST=true` is **refused when `NODE_ENV=production`** (which the
+Dockerfile sets), because the opt-in admits any port on loopback — harmless on a
+laptop, and on a public mint it would let any page a developer's machine loads
+read `/exchange` and `/livekit-token`.
+
+A request carrying **no** `Origin` is served normally (curl, the bot, health
+checks); one carrying a **disallowed** `Origin` is refused with 403. That is not
+authentication — `Origin` is forgeable off-browser and the bearer credential
+remains the only thing that authorises — it closes the window where an honest
+browser still reaches the handler via a preflight cached from before an origin
+was revoked.
+
 Entries are validated at boot: each must be exactly `scheme://host[:port]`, and
 `*`, `null`, a trailing slash, a path, or an explicit default port are all
 rejected with the offending value named. Every one of those matches no `Origin`

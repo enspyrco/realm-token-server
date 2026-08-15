@@ -53,16 +53,23 @@ export function makeCorsMiddleware({ allowedOrigins = [], allowLocalhost = false
     // leak nothing about what is or isn't a known origin.
     if (req.method === 'OPTIONS') return res.status(204).end();
 
-    // Non-preflight requests are never rejected on Origin. CORS is enforced by
-    // the browser, and server-to-server callers (curl, the bot, health checks)
-    // send no Origin at all — refusing here would break them while stopping no
-    // attacker, who can forge any Origin outside a browser anyway.
+    // A request with NO Origin passes untouched: server-to-server callers (curl,
+    // the bot, health checks) send none, and refusing them would break every
+    // non-browser client while stopping no attacker — anything outside a browser
+    // omits or forges Origin at will.
     //
-    // What that means per caller: a browser's cross-origin JSON/bearer POST is
-    // stopped by its own preflight above, so the handler never runs for a denied
-    // origin. A non-browser caller, or a browser replaying a still-cached
-    // preflight, does reach the handler — it simply cannot read the response.
-    // Origin is a hint about provenance here, never admission.
+    // A request with a PRESENT but disallowed Origin is refused. This is not
+    // authentication (the header is trivially forgeable off-browser, and the
+    // bearer credential remains the only thing that actually authorises); it
+    // closes the narrow window where an *honest* browser still reaches the
+    // handler despite the allowlist — a preflight cached from before the origin
+    // was revoked, or a simple request that never triggers one. Cheap, and it
+    // costs a credential mint nothing to decline work it would refuse to let the
+    // caller read anyway.
+    if (origin && !isAllowed(origin, allowedOrigins, allowLocalhost)) {
+      return res.status(403).json({ error: 'origin not allowed' });
+    }
+
     return next();
   };
 }
@@ -137,4 +144,21 @@ export function requireAllowedOrigins(raw) {
     }
   }
   return origins;
+}
+
+/**
+ * Resolves the localhost opt-in, refusing it in production.
+ *
+ * The opt-in admits any port on loopback — fine on a laptop, a hole on a public
+ * mint, where any page a developer's machine can be induced to load would be
+ * free to read /exchange and /livekit-token responses. "Dev only" was stated in
+ * the README and .env.example and enforced in neither. The Dockerfile sets
+ * NODE_ENV=production, so the deployed default is refusal.
+ */
+export function resolveAllowLocalhost(env = {}) {
+  const enabled = env.CORS_ALLOW_LOCALHOST === 'true';
+  if (enabled && env.NODE_ENV === 'production') {
+    throw new Error('CORS_ALLOW_LOCALHOST=true is refused when NODE_ENV=production');
+  }
+  return enabled;
 }
