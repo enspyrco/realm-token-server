@@ -388,6 +388,31 @@ test('requireAllowedOrigins accepts a bracketed IPv6 literal', () => {
   assert.deepEqual(requireAllowedOrigins('http://[::1]:8080'), ['http://[::1]:8080']);
 });
 
+// `new URL` preserves all of these, so the Origin-form round-trip alone waves
+// them through — and each matches no Origin a browser sends.
+test('requireAllowedOrigins rejects malformed dotted hosts', () => {
+  assert.throws(() => requireAllowedOrigins('https://world.imagineering.cc.'), InvalidAllowedOrigins);
+  assert.throws(() => requireAllowedOrigins('https://.example.com'), InvalidAllowedOrigins);
+  assert.throws(() => requireAllowedOrigins('https://world..imagineering.cc'), InvalidAllowedOrigins);
+});
+
+// `null` is what a sandboxed iframe sends. The env parser refuses to enrol it,
+// but the comparison must refuse it too — createApp is callable directly.
+test('Origin: null is never echoed, even if enrolled directly', async () => {
+  const nullApp = appWith({ allowedOrigins: ['null'] });
+  const srv = nullApp.listen(0);
+  await new Promise((r) => srv.once('listening', r));
+  try {
+    const res = await fetch(`http://localhost:${srv.address().port}/exchange`, {
+      method: 'OPTIONS',
+      headers: { origin: 'null', 'access-control-request-method': 'POST' },
+    });
+    assert.equal(res.headers.get('access-control-allow-origin'), null);
+  } finally {
+    await new Promise((r) => srv.close(r));
+  }
+});
+
 test('parseAllowedOrigins trims and drops empties', () => {
   assert.deepEqual(
     parseAllowedOrigins(' https://a.example , ,https://b.example '),

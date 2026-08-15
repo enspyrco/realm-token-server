@@ -22,6 +22,12 @@
 const LOCALHOST = /^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/;
 
 function isAllowed(origin, allowedOrigins, allowLocalhost) {
+  // Grounded here, not only in the env parser: `null` is what a sandboxed iframe
+  // (and a file:// page) sends, so echoing it would admit every one of them. The
+  // parser rejects it for the deployed path, but createApp/makeCorsMiddleware
+  // are callable directly — enforce the invariant where the comparison happens,
+  // not only where today's caller happens to enter.
+  if (origin === 'null') return false;
   if (allowedOrigins.includes(origin)) return true;
   return allowLocalhost && LOCALHOST.test(origin);
 }
@@ -135,6 +141,15 @@ export function requireAllowedOrigins(raw) {
     if (!/^[a-z0-9.-]+$/.test(url.hostname) && !/^\[[0-9a-f:]+\]$/.test(url.hostname)) {
       throw new InvalidAllowedOrigins(
         `entry "${o}" has an invalid host "${url.hostname}" — wildcards are not supported; list each origin`,
+      );
+    }
+    // Same silent-breakage class as the trailing slash, and `new URL` preserves
+    // all three so the round-trip check below waves them through: a trailing dot
+    // (`world.imagineering.cc.`), a leading dot, or a doubled dot are all
+    // accepted as hosts and match no Origin a browser will ever send.
+    if (/^\.|\.$|\.\./.test(url.hostname)) {
+      throw new InvalidAllowedOrigins(
+        `entry "${o}" has a malformed host "${url.hostname}" — no leading, trailing or doubled dots`,
       );
     }
     // url.origin drops any path, trailing slash, and default port — so equality
