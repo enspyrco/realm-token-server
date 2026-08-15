@@ -73,6 +73,28 @@ test('an unrecognised path is normalised, never echoed', async () => {
   assert.equal(JSON.stringify(entry).includes('good-id-token-SECRET'), false);
 });
 
+// Safe today only because req.path drops the query; logging req.originalUrl
+// would leak and every other test would still pass.
+test('a query string is never echoed', async () => {
+  drain();
+  await fetch(`${base}/exchange?idToken=good-id-token-SECRET`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ idToken: 'good-id-token-SECRET' }),
+  });
+  const [entry] = drain();
+  assert.equal(entry.path, '/exchange');
+  assert.equal(JSON.stringify(entry).includes('good-id-token-SECRET'), false);
+});
+
+// The healthcheck is GET; a POST to the same path is a 404 worth seeing.
+test('only the GET healthcheck is skipped', async () => {
+  drain();
+  await fetch(`${base}/healthz`, { method: 'POST' });
+  const [entry] = drain();
+  assert.equal(entry.status, 404);
+});
+
 // Telemetry must never be a liveness dependency: this runs in an EventEmitter
 // listener after the response is sent, so an escaping throw is uncaught.
 test('a throwing log sink cannot take down the service', async () => {
@@ -93,8 +115,14 @@ test('a throwing log sink cannot take down the service', async () => {
       body: JSON.stringify({ idToken: 'good-id-token-SECRET' }),
     });
     assert.equal(res.status, 200);
-    // Still serving after the sink threw.
-    const again = await fetch(`http://localhost:${srv.address().port}/healthz`);
+    // The second request must be one the logger actually WRITES for — /healthz
+    // is skipped, so it would prove only that the process is alive, not that a
+    // subsequent logged request still succeeds through a throwing sink.
+    const again = await fetch(`http://localhost:${srv.address().port}/exchange`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ idToken: 'good-id-token-SECRET' }),
+    });
     assert.equal(again.status, 200);
   } finally {
     await new Promise((r) => srv.close(r));

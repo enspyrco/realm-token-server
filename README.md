@@ -108,10 +108,17 @@ construction"; this is. There is deliberately no subject, so correlation costs a
 considered change rather than leaking a uid by default. A test asserts the ID
 token, the presented credential, the minted token and the subject are all absent.
 
-**Logging is never a liveness dependency.** The write happens in an
+**A throwing log sink cannot take down the mint.** The write happens in an
 `EventEmitter` listener after the response is sent, so an escaping throw would be
-an uncaught exception — a log sink failure taking down the credential mint. It is
-wrapped; a test asserts the service keeps serving when the sink throws.
+an uncaught exception. It is wrapped, and a test asserts a *subsequent logged
+request* still succeeds while the sink throws.
+
+Stated precisely, because the weaker claim is the true one: this covers
+**exceptions**, not backpressure. `console.log` is a synchronous write, so a
+backed-up Docker logging driver blocks the event loop rather than throwing — and
+this raises the write rate from one line per process to one per request. The sink
+must also be synchronous: a function returning a rejected promise escapes the
+`try` entirely.
 
 Both `finish` and `close` are handled (guarded to write once), so an aborted
 connection or a slowloris hold is logged with `completed: false` rather than

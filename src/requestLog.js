@@ -29,11 +29,16 @@ const MAX_ORIGIN_LENGTH = 256;
 // JSON.stringify is also the injection defence. A raw-string log format would
 // let `Origin: x\n{"msg":"…"}` forge whole log entries; stringify escapes the
 // newline instead.
+// `log` MUST be synchronous. A function returning a rejected promise escapes the
+// try below (a `try` does not see an async rejection) and becomes exactly the
+// uncaught exception the catch exists to prevent. Production uses console.log.
 export function makeRequestLogger({ log = console.log, now = Date.now, skipPaths = ['/healthz'] } = {}) {
   return function requestLog(req, res, next) {
     // The container healthcheck hits /healthz every 30s. Logging it would add
     // ~2900 lines a day that say nothing the healthcheck status doesn't already.
-    if (skipPaths.includes(req.path)) return next();
+    // Method-aware: only the GET healthcheck is noise. A POST/PUT to /healthz
+    // is a 404 worth seeing, and a method-blind skip would hide it.
+    if (req.method === 'GET' && skipPaths.includes(req.path)) return next();
 
     const startedAt = now();
     let written = false;
@@ -48,9 +53,11 @@ export function makeRequestLogger({ log = console.log, now = Date.now, skipPaths
       if (written) return;
       written = true;
 
-      const rawOrigin = req.get('origin') ?? null;
-
       try {
+        // Inside the try: a non-Express `req`, or any future header read that
+        // can throw, would otherwise reopen the exact uncaught-exception crash
+        // this block exists to prevent.
+        const rawOrigin = req.get('origin') ?? null;
         log(JSON.stringify({
           msg: 'request',
           method: req.method,
