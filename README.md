@@ -126,11 +126,62 @@ vanishing — the same silence this module exists to end, on the path that matte
 most. `origin` is truncated to 256 chars, and `originAllowed` is `null` rather
 than `false` when no `Origin` was sent, since those requests are served.
 
+`proxied` is carried for one reason: it is the only signal that says whether the
+per-IP rate limit is keyed on a real client address or on the proxy in front of
+it. It records *whether* the address came from a trusted proxy header, never the
+address — the fact is transport, the address is a person, and this log has no
+subject on purpose.
+
 `Origin` is attacker-controlled, so lines are emitted via `JSON.stringify`: a
 raw-string format would let a newline in `Origin` forge whole log entries.
 
 `/healthz` is skipped — the container healthcheck fires every 30s and
 `docker inspect` already answers what those lines would say.
+
+## Rate limiting
+
+Both POST routes do real work for a caller they have not yet authenticated:
+`/exchange` calls Firebase `verifyIdToken` (a network round trip, plus a cert
+fetch on the first call after a container start — 227ms cold vs 4ms warm), and
+`/livekit-token` mints a token carrying a `RoomAgentDispatch`, so hammering it
+amplifies into rooms rather than merely burning CPU here.
+
+Two fixed-window layers, per route, in this order (`src/rateLimit.js`):
+
+| layer | key | ceiling |
+| --- | --- | --- |
+| per-IP | client address | 30/min on `/exchange`, 30/min on `/livekit-token` |
+| service-wide | none | 600/min across both |
+
+Per-IP runs first, so one abusive source is refused out of its own bucket
+without first spending the budget everyone shares. `/healthz` and unknown paths
+are never throttled — the healthcheck must not be able to 429 itself into a
+restart loop — and preflights never reach the limiter, because CORS answers them
+upstream. A refusal is `429` with `Retry-After`, and the request log already
+carries the status, so throttling is visible without a new counter.
+
+**The 403 on a disallowed origin is not a throttle.** Anything outside a browser
+omits `Origin` and is served normally, by design. Origin is a browser-honesty
+check; this is the volume check.
+
+**`TRUST_PROXY_HOPS` decides whether the per-IP layer is per-IP.** Caddy fronts
+this service, so every request arrives from the docker bridge gateway: at `0`
+the whole internet shares one bucket and any single caller throttles everyone,
+while too high a value lets a caller name its own address per request. Neither
+failure raises an error, fails a test, or reddens the healthcheck — so the value
+is **required at boot under `NODE_ENV=production`** rather than defaulted, and
+each request logs `proxied`, which is `false` on every line exactly when the
+limiter is bucketing the world together.
+
+Stated at its proven scope: this is a ceiling on accidental and single-source
+abuse. A caller with many source addresses can churn the bounded per-key table
+and evade the per-IP layer — which is why the service-wide layer is keyed on
+nothing and cannot be evaded at all. Neither layer is a defence against a
+distributed attack.
+
+It is also **not** authorization. `/livekit-token` still mints a token for any
+`roomName` to any holder of a valid credential; admission control does not exist
+yet (claude-tasks#2850).
 
 ## Contract parity
 
@@ -148,7 +199,18 @@ npm install
 cp .env.example .env   # fill in — see comments
 npm start              # :8080
 npm test               # node --test (no real credentials needed)
+
+./scripts/dev.sh       # the real server on ephemeral keys — no .env needed
+./scripts/verify.sh    # boot it and assert over real HTTP — run before commit
 ```
+
+`npm test` exercises the app in-process with injected fakes. `scripts/verify.sh`
+boots the actual `npm start` entrypoint and asserts on the wire: the same env
+parsing, the same boot-time refusals, the same middleware order the container
+runs. It catches what a green unit suite cannot — an entrypoint that no longer
+boots, middleware mounted in the wrong order, a header that never reaches the
+wire — and it is the loop to run *before* `git commit`, so review and CI are not
+doing verification's job at ten times the cost.
 
 ## Deploy (OCI)
 
@@ -215,7 +277,14 @@ changed in the GitHub UI — there is no REST or GraphQL endpoint for it
 ### Host prerequisites
 
 The box's `.env` must contain every variable in `.env.example` — including
-`CORS_ALLOWED_ORIGINS`, which is required at startup. A container that boots
-without it exits immediately rather than serving a web-broken deployment. The
-Dockerfile sets `NODE_ENV=production`, so allowlist entries must be https DNS
-names.
+`CORS_ALLOWED_ORIGINS` and `TRUST_PROXY_HOPS`, both required at startup. A
+container that boots without them exits immediately rather than serving a
+web-broken deployment or a rate limiter that buckets the whole internet
+together. The Dockerfile sets `NODE_ENV=production`, so allowlist entries must
+be https DNS names.
+
+> **Deploy order matters for `TRUST_PROXY_HOPS`.** Add `TRUST_PROXY_HOPS=1` to
+> the box's `.env` *before* bumping the image tag. It is absent from the current
+> `.env`, so an image from this version pulled first will refuse to boot and the
+> container will restart-loop — loudly and by design, but only recoverable by
+> editing `.env` on the box.
