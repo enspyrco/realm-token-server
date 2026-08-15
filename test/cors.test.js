@@ -503,3 +503,12 @@ test('parseAllowedOrigins trims and drops empties', () => {
   assert.deepEqual(parseAllowedOrigins(''), []);
   assert.deepEqual(parseAllowedOrigins(undefined), []);
 });
+
+// A string would make the allowlist `includes` a substring match, silently
+// widening it to every prefix of every entry.
+test('makeCorsMiddleware refuses a string allowlist', () => {
+  assert.throws(
+    () => makeCorsMiddleware({ allowedOrigins: 'https://world.imagineering.cc' }),
+    TypeError,
+  );
+});

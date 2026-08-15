@@ -50,6 +50,15 @@ function isAllowed(origin, allowedOrigins, allowLocalhost) {
 }
 
 export function makeCorsMiddleware({ allowedOrigins = [], allowLocalhost = false } = {}) {
+  // A string here would turn the `includes` below from an exact match into a
+  // SUBSTRING match — 'https://world.imagineering.cc'.includes('https://world')
+  // is true — quietly widening the allowlist to every prefix of itself. createApp
+  // already demands an array; this door is callable directly, so it demands one
+  // too rather than trusting its caller.
+  if (!Array.isArray(allowedOrigins)) {
+    throw new TypeError('makeCorsMiddleware: allowedOrigins must be an array');
+  }
+
   return function cors(req, res, next) {
     const origin = req.get('origin');
 
