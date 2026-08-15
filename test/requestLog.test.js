@@ -59,7 +59,101 @@ test('a request emits one structured line with the transport facts', async () =>
   assert.equal(entry.status, 200);
   assert.equal(entry.origin, ALLOWED);
   assert.equal(entry.originAllowed, true);
+  assert.equal(entry.completed, true);
   assert.ok(Number.isFinite(entry.durationMs));
+});
+
+// A URL carries secrets just as readily as a body — a copied link, a proxy
+// rewrite, a client bug appending a token to the path.
+test('an unrecognised path is normalised, never echoed', async () => {
+  drain();
+  await fetch(`${base}/exchange/good-id-token-SECRET`, { method: 'POST' });
+  const [entry] = drain();
+  assert.equal(entry.path, 'other');
+  assert.equal(JSON.stringify(entry).includes('good-id-token-SECRET'), false);
+});
+
+// Telemetry must never be a liveness dependency: this runs in an EventEmitter
+// listener after the response is sent, so an escaping throw is uncaught.
+test('a throwing log sink cannot take down the service', async () => {
+  const app = createApp({
+    verifyProviderIdToken: fakeVerify,
+    privateKeyPem: keys.privateKeyPem,
+    publicKeyPem: keys.publicKeyPem,
+    mintLiveKitToken: fakeMint,
+    allowedOrigins: [ALLOWED],
+    log: () => { throw new Error('sink is down'); },
+  });
+  const srv = app.listen(0);
+  await new Promise((r) => srv.once('listening', r));
+  try {
+    const res = await fetch(`http://localhost:${srv.address().port}/exchange`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ idToken: 'good-id-token-SECRET' }),
+    });
+    assert.equal(res.status, 200);
+    // Still serving after the sink threw.
+    const again = await fetch(`http://localhost:${srv.address().port}/healthz`);
+    assert.equal(again.status, 200);
+  } finally {
+    await new Promise((r) => srv.close(r));
+  }
+});
+
+// A request with no Origin is SERVED, so reporting `false` would read as a
+// denial and teach an operator the bot is being blocked.
+test('originAllowed is null, not false, when no Origin was sent', async () => {
+  drain();
+  await fetch(`${base}/exchange`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ idToken: 'good-id-token-SECRET' }),
+  });
+  const [entry] = drain();
+  assert.equal(entry.status, 200);
+  assert.equal(entry.origin, null);
+  assert.equal(entry.originAllowed, null);
+});
+
+// Unbounded attacker-controlled text in every line is how a disk fills.
+test('a huge Origin is truncated', () => {
+  const out = [];
+  const mw = makeRequestLogger({ log: (l) => out.push(l), now: () => 0 });
+  const res = new EventEmitter();
+  res.statusCode = 200;
+  res.getHeader = () => undefined;
+  mw({ method: 'POST', path: '/exchange', get: () => 'https://' + 'a'.repeat(5000) }, res, () => {});
+  res.emit('finish');
+  assert.ok(JSON.parse(out[0]).origin.length <= 256);
+});
+
+// finish never fires on an aborted connection, so listening only to it would
+// leave a slowloris hold or a mid-mint disconnect invisible.
+test('an aborted request is still logged, marked incomplete', () => {
+  const out = [];
+  const mw = makeRequestLogger({ log: (l) => out.push(l), now: () => 0 });
+  const res = new EventEmitter();
+  res.statusCode = 200;
+  res.getHeader = () => undefined;
+  mw({ method: 'POST', path: '/exchange', get: () => null }, res, () => {});
+  res.emit('close'); // no finish — the client vanished
+  assert.equal(out.length, 1);
+  assert.equal(JSON.parse(out[0]).completed, false);
+});
+
+// finish-then-close is the normal sequence; it must not double-log.
+test('the normal finish-then-close sequence logs exactly once', () => {
+  const out = [];
+  const mw = makeRequestLogger({ log: (l) => out.push(l), now: () => 0 });
+  const res = new EventEmitter();
+  res.statusCode = 200;
+  res.getHeader = () => undefined;
+  mw({ method: 'POST', path: '/exchange', get: () => null }, res, () => {});
+  res.emit('finish');
+  res.emit('close');
+  assert.equal(out.length, 1);
+  assert.equal(JSON.parse(out[0]).completed, true);
 });
 
 // The refused ones are the whole point — a denied origin that leaves no trace is

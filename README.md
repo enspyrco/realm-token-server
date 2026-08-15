@@ -99,12 +99,25 @@ status, duration, `origin`, and whether CORS admitted it. Mounted before CORS,
 so refused requests (403s, denied preflights) are logged too: a denial that
 leaves no trace is indistinguishable from no traffic.
 
-**Transport facts only.** Nothing derived from a request body, an
-`Authorization` header, or a minted token is logged, so credential material
-cannot reach the log by construction rather than by remembering to redact. That
-costs correlation — there is deliberately no subject in these lines — and a test
-asserts the ID token, the presented credential, the minted token and the subject
-are all absent.
+**Transport facts only, and the path is normalised rather than echoed.** Nothing
+derived from a request body, an `Authorization` header, or a minted token is
+logged — and because a URL carries secrets just as readily (a copied link, a
+proxy rewrite, a client appending a token to `/exchange/…`), an unrecognised
+path is recorded as `other`. Excluding bodies and headers alone was not "by
+construction"; this is. There is deliberately no subject, so correlation costs a
+considered change rather than leaking a uid by default. A test asserts the ID
+token, the presented credential, the minted token and the subject are all absent.
+
+**Logging is never a liveness dependency.** The write happens in an
+`EventEmitter` listener after the response is sent, so an escaping throw would be
+an uncaught exception — a log sink failure taking down the credential mint. It is
+wrapped; a test asserts the service keeps serving when the sink throws.
+
+Both `finish` and `close` are handled (guarded to write once), so an aborted
+connection or a slowloris hold is logged with `completed: false` rather than
+vanishing — the same silence this module exists to end, on the path that matters
+most. `origin` is truncated to 256 chars, and `originAllowed` is `null` rather
+than `false` when no `Origin` was sent, since those requests are served.
 
 `Origin` is attacker-controlled, so lines are emitted via `JSON.stringify`: a
 raw-string format would let a newline in `Origin` forge whole log entries.
