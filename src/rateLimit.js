@@ -43,12 +43,27 @@ export function makeRateLimiter({
   // A constant key makes this same primitive the global limiter. Per-IP and
   // service-wide are the same counter with a different notion of "who".
   key = (req) => req.ip,
+  // Which ceiling this is, recorded on the request when it refuses. A per-IP 429
+  // and a service-wide 429 are opposite events — one is the system working on a
+  // single noisy caller, the other is the circuit breaker turning away everybody
+  // — and both otherwise land in the log as an indistinguishable status 429.
+  // Never sent to the caller: telling an attacker they reached the global
+  // ceiling confirms the service-wide effect they were testing for.
+  scope = 'unnamed',
 } = {}) {
   if (!Number.isInteger(limit) || limit < 1) {
     throw new TypeError('makeRateLimiter: limit must be a positive integer');
   }
   if (!Number.isInteger(windowMs) || windowMs < 1) {
     throw new TypeError('makeRateLimiter: windowMs must be a positive integer');
+  }
+  // Validated with its siblings, because it is the argument whose bad value is
+  // SILENT: maxKeys of 0 makes the eviction loop discard every entry the instant
+  // it is written, so every request sees a fresh window and nothing is ever
+  // limited. A limiter that returns 200 forever is indistinguishable from no
+  // limiter, which is the failure class this module exists to close.
+  if (!Number.isInteger(maxKeys) || maxKeys < 1) {
+    throw new TypeError('makeRateLimiter: maxKeys must be a positive integer');
   }
 
   // Insertion-ordered by construction (JS Map), which is what makes the eviction
@@ -69,13 +84,19 @@ export function makeRateLimiter({
 
     if (entry === undefined || t >= entry.resetAt) {
       entry = { count: 0, resetAt: t + windowMs };
-    } else {
-      // Re-insert so the eviction order is "least recently STARTED a window"
-      // rather than "first ever seen"; without the delete, a client active for
-      // hours keeps its original position and is evicted ahead of a one-shot
-      // caller that arrived later.
-      windows.delete(id);
     }
+
+    // UNCONDITIONAL, and that is the whole point. Map.set on an existing key
+    // leaves its insertion position untouched, so this delete is what actually
+    // moves a key to the back of the eviction queue. Doing it only for requests
+    // inside a live window — as this first did — selected exactly the wrong
+    // victim: a caller whose window had expired kept its original ancient
+    // position and was evicted ahead of a burst client that kept refreshing
+    // its own, so table pressure preferentially discarded the quiet clients and
+    // preserved the noisy ones. Delete on every request and the order is a true
+    // least-recently-seen. (A delete of an absent key is a no-op, so the
+    // first-arrival case needs no branch of its own.)
+    windows.delete(id);
     entry.count += 1;
     windows.set(id, entry);
 
@@ -90,6 +111,7 @@ export function makeRateLimiter({
       // immediate retry, which is precisely the behaviour being limited.
       const retryAfter = Math.max(1, Math.ceil((entry.resetAt - t) / 1000));
       res.setHeader('Retry-After', String(retryAfter));
+      req.rateLimited = scope;
       return res.status(429).json({ error: 'rate limited' });
     }
 
@@ -112,6 +134,10 @@ export function makeRateLimiter({
  * Neither shows up as an error, a failed test, or a red healthcheck — so it is
  * refused at boot rather than defaulted, exactly as CORS_ALLOWED_ORIGINS is.
  */
+// One: Caddy. See the check in resolveTrustProxyHops for why this is a ceiling
+// and not merely a default.
+const MAX_TRUST_PROXY_HOPS = 1;
+
 export class InvalidTrustProxyHops extends Error {
   constructor(reason) {
     super(`TRUST_PROXY_HOPS ${reason}`);
@@ -151,5 +177,19 @@ export function resolveTrustProxyHops(env = {}) {
   if (!/^\d+$/.test(raw)) {
     throw new InvalidTrustProxyHops(`must be a non-negative integer, got "${raw}"`);
   }
-  return Number(raw);
+  const hops = Number(raw);
+  // Bounded by the topology this service actually has. Requiring the value in
+  // production stops the too-LOW failure; nothing stopped the too-HIGH one, and
+  // a typo'd 2 or 11 walks straight through the boot gate into exactly the mode
+  // the gate exists to prevent — every hop beyond a real proxy is one an
+  // arbitrary caller can write, so req.ip becomes attacker-chosen and the per-IP
+  // limit stops existing, silently. There is one proxy in front of this service
+  // (Caddy). Adding a second is a deployment change that should be made here, in
+  // a reviewed commit, rather than absorbed by an env var at 3am.
+  if (hops > MAX_TRUST_PROXY_HOPS) {
+    throw new InvalidTrustProxyHops(
+      `is ${hops}, but this service sits behind at most ${MAX_TRUST_PROXY_HOPS} proxy (Caddy) — a higher value lets an untrusted caller choose its own client address. If the topology genuinely changed, raise MAX_TRUST_PROXY_HOPS in src/rateLimit.js in the same commit.`,
+    );
+  }
+  return hops;
 }

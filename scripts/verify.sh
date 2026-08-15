@@ -33,16 +33,19 @@ check() {
   fi
 }
 
-# Kill whatever owns the port, never a process-name pattern: a pattern miss
-# leaves the old process holding the port while the new one dies at bind, and
-# the stale build then serves every assertion below under the new one's name.
-free_port() {
-  local pids
-  pids="$(lsof -tiTCP:"$PORT" -sTCP:LISTEN 2>/dev/null || true)"
-  [ -n "$pids" ] && kill $pids 2>/dev/null || true
-}
+port_listener() { lsof -tiTCP:"$PORT" -sTCP:LISTEN 2>/dev/null || true; }
+
+SERVER_PID=""
 cleanup() {
-  free_port
+  # Kill OUR child by pid. Then, only if the port is still held, kill its actual
+  # listener — never a process-name pattern, because a pattern miss leaves the
+  # old process holding the port while the next run dies at bind and the stale
+  # build serves every assertion under the new one's name.
+  [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null || true
+  wait "$SERVER_PID" 2>/dev/null || true
+  local held
+  held="$(port_listener)"
+  [ -n "$held" ] && kill $held 2>/dev/null || true
   if [ "$failures" -ne 0 ]; then
     echo
     echo "--- server log ---"
@@ -52,8 +55,19 @@ cleanup() {
 }
 trap cleanup EXIT
 
-free_port
+# Refuse rather than evict. An earlier version killed the port's listener up
+# front, which is the right TEARDOWN discipline for a process we started and the
+# wrong STARTUP discipline for one we did not: on entry the listener is by
+# definition somebody else's, and a verification script has no business killing a
+# developer's running work without asking.
+if [ -n "$(port_listener)" ]; then
+  echo "FAIL port $PORT is already in use by pid(s) $(port_listener | tr '\n' ' ')"
+  echo "     Stop it, or run with a different port: PORT=8899 ./scripts/verify.sh"
+  exit 1
+fi
+
 npm start >"$LOG" 2>&1 &
+SERVER_PID=$!
 
 # Boot, or say what the server said. A silent timeout here is the same
 # indistinguishable-silence problem the request log exists to solve.
@@ -95,6 +109,18 @@ check 'a disallowed origin is refused' 403 \
 # takes the per-IP window to its ceiling and one past it.
 for _ in $(seq 1 29); do post_exchange >/dev/null; done
 check 'the per-IP ceiling refuses the next request' 429 "$(post_exchange)"
+
+# The mint route has its own ceiling and its own budget. Exercised separately
+# because it is the route that dispatches an agent into a room — the amplification
+# this whole ceiling exists for — and a check that only ever walks /exchange would
+# report green with the mint route wide open.
+check 'the mint route still has its own budget' 401 \
+  "$(status -X POST "$BASE/livekit-token" -H 'content-type: application/json' -d '{"roomName":"r"}')"
+for _ in $(seq 1 30); do
+  curl -s -o /dev/null -X POST "$BASE/livekit-token" -H 'content-type: application/json' -d '{"roomName":"r"}'
+done
+check 'the mint route enforces its own ceiling' 429 \
+  "$(status -X POST "$BASE/livekit-token" -H 'content-type: application/json' -d '{"roomName":"r"}')"
 
 check 'a refusal tells the caller when to come back' 1 \
   "$(curl -s -o /dev/null -D - -X POST "$BASE/exchange" \

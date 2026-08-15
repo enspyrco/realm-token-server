@@ -91,6 +91,11 @@ export function makeRequestLogger({ log = console.log, now = Date.now, skipPaths
           proxied: typeof req.ip === 'string' && typeof req.socket?.remoteAddress === 'string'
             ? req.ip !== req.socket.remoteAddress
             : null,
+          // Which ceiling refused this, or null. A status of 429 alone cannot
+          // distinguish "one caller is noisy" from "the service-wide circuit
+          // breaker is turning everyone away", and those want different
+          // responses from whoever is reading.
+          rateLimited: typeof req.rateLimited === 'string' ? req.rateLimited : null,
         }));
       } catch (err) {
         // Telemetry must never be a liveness dependency. This runs in an

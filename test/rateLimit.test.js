@@ -123,6 +123,27 @@ test('the key table is bounded, and eviction takes the oldest window', () => {
   assert.equal(hit(limiter, { ip: 'b' }).passed, true, 'b was evicted and starts fresh');
 });
 
+test('eviction discards the least recently SEEN caller, not the least recently busy', () => {
+  let clock = 0;
+  const limiter = makeRateLimiter({ limit: 1, windowMs: 60_000, maxKeys: 2, now: () => clock });
+
+  hit(limiter, { ip: 'a' });
+  hit(limiter, { ip: 'b' });
+
+  // a's window expires and a returns. Map.set on an existing key does NOT move
+  // it, so unless the delete is unconditional, a keeps its original front-of-map
+  // position and is evicted ahead of b — the table would preferentially discard
+  // whichever caller had been quiet and preserve whichever kept its window warm,
+  // which is exactly backwards for a limiter.
+  clock = 60_000;
+  hit(limiter, { ip: 'a' });
+
+  hit(limiter, { ip: 'c' });
+
+  assert.equal(hit(limiter, { ip: 'a' }).passed, false, 'a was seen most recently and must survive');
+  assert.equal(hit(limiter, { ip: 'b' }).passed, true, 'b was the least recently seen and is the correct victim');
+});
+
 test('a caller churning the table cannot grow memory without bound', () => {
   const limiter = makeRateLimiter({ limit: 1, windowMs: 60_000, maxKeys: 8, now: () => 0 });
   for (let i = 0; i < 5000; i += 1) hit(limiter, { ip: `10.0.0.${i}` });
@@ -138,6 +159,10 @@ test('a nonsense limit is refused at construction, not at 3am', () => {
   assert.throws(() => makeRateLimiter({ limit: 1.5, windowMs: 1000 }), TypeError);
   assert.throws(() => makeRateLimiter({ limit: 1, windowMs: 0 }), TypeError);
   assert.throws(() => makeRateLimiter({}), TypeError);
+  // maxKeys is the argument whose bad value is SILENT: 0 evicts every entry as
+  // it is written, so nothing is ever limited and the service looks healthy.
+  assert.throws(() => makeRateLimiter({ limit: 1, windowMs: 1000, maxKeys: 0 }), TypeError);
+  assert.throws(() => makeRateLimiter({ limit: 1, windowMs: 1000, maxKeys: 1.5 }), TypeError);
 });
 
 test('resolveTrustProxyHops parses a stated topology', () => {
@@ -165,6 +190,20 @@ test('resolveTrustProxyHops refuses to guess in production', () => {
     () => resolveTrustProxyHops({ NODE_ENV: 'production', TRUST_PROXY_HOPS: '' }),
     InvalidTrustProxyHops,
   );
+});
+
+test('resolveTrustProxyHops refuses more hops than the topology has', () => {
+  // The boot gate stopped the too-LOW failure. A typo'd 2 or 11 is the too-HIGH
+  // one, and it walks into exactly the mode the gate exists to prevent: every
+  // hop past a real proxy is one an arbitrary caller can write, so req.ip
+  // becomes attacker-chosen and the per-IP limit silently stops existing.
+  for (const raw of ['2', '11', '999']) {
+    assert.throws(
+      () => resolveTrustProxyHops({ TRUST_PROXY_HOPS: raw }),
+      InvalidTrustProxyHops,
+      `"${raw}" is more proxies than exist and should be refused`,
+    );
+  }
 });
 
 test('resolveTrustProxyHops rejects values Number() would silently accept', () => {

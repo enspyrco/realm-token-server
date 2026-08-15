@@ -73,6 +73,23 @@ test('a single caller is refused past the per-IP ceiling on /exchange', async ()
   });
 });
 
+test('a single caller is refused past the per-IP ceiling on /livekit-token', async () => {
+  // The sibling of the /exchange test above, and the one that matters more: this
+  // is the route that embeds a RoomAgentDispatch, so an unbounded caller here
+  // amplifies into rooms rather than merely burning CPU. Without this, deleting
+  // mintLimit from server.js leaves the whole suite green — the ceiling named in
+  // the README as the reason for the work would be unwitnessed by any test.
+  await withServer({}, async (base) => {
+    let lastAllowed;
+    for (let i = 0; i < 30; i += 1) lastAllowed = await post(base, '/livekit-token');
+    assert.equal(lastAllowed.status, 401);
+
+    const refused = await post(base, '/livekit-token');
+    assert.equal(refused.status, 429);
+    assert.ok(Number(refused.headers.get('retry-after')) >= 1);
+  });
+});
+
 test('the two mint routes hold separate per-IP budgets', async () => {
   await withServer({}, async (base) => {
     for (let i = 0; i < 31; i += 1) await post(base, '/exchange');

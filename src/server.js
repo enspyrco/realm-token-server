@@ -108,6 +108,7 @@ export function createApp({
     limit: GLOBAL_PER_MINUTE,
     windowMs: MINUTE_MS,
     key: () => 'global',
+    scope: 'global',
     // One key, so the table cannot grow and eviction can never discard it.
     maxKeys: 1,
     now,
@@ -115,11 +116,13 @@ export function createApp({
   const exchangeLimit = makeRateLimiter({
     limit: EXCHANGE_PER_IP_PER_MINUTE,
     windowMs: MINUTE_MS,
+    scope: 'exchange-per-ip',
     now,
   });
   const mintLimit = makeRateLimiter({
     limit: MINT_PER_IP_PER_MINUTE,
     windowMs: MINUTE_MS,
+    scope: 'mint-per-ip',
     now,
   });
 

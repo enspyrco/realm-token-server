@@ -9,14 +9,23 @@
 set -euo pipefail
 
 # ES256 (P-256), matching what the exchange handler signs with in production.
+#
+# The directory is removed on the line after it is read, NOT on an EXIT trap.
+# This file is SOURCED, so a trap installed here lands in the CALLER'S shell —
+# and a shell has exactly one EXIT trap, so verify.sh's own `trap cleanup EXIT`
+# silently replaced it and every run left a private key behind in $TMPDIR
+# (measured: five, one per run). A second trap is not the fix; needing one at all
+# was. Nothing below this block reads the directory, so there is no window left
+# to guard.
 _key_dir="$(mktemp -d)"
-trap 'rm -rf "$_key_dir"' EXIT
 openssl ecparam -name prime256v1 -genkey -noout -out "$_key_dir/key.pem" 2>/dev/null
 openssl pkcs8 -topk8 -nocrypt -in "$_key_dir/key.pem" -out "$_key_dir/private.pem"
 openssl ec -in "$_key_dir/key.pem" -pubout -out "$_key_dir/public.pem" 2>/dev/null
 
 export REALM_JWT_PRIVATE_KEY="$(cat "$_key_dir/private.pem")"
 export REALM_JWT_PUBLIC_KEY="$(cat "$_key_dir/public.pem")"
+rm -rf "$_key_dir"
+unset _key_dir
 
 # Real project id: verifyIdToken needs no credential, only the id it checks the
 # token's `aud` against, so a local run reaches the same code path as production

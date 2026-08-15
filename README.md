@@ -157,8 +157,13 @@ Per-IP runs first, so one abusive source is refused out of its own bucket
 without first spending the budget everyone shares. `/healthz` and unknown paths
 are never throttled — the healthcheck must not be able to 429 itself into a
 restart loop — and preflights never reach the limiter, because CORS answers them
-upstream. A refusal is `429` with `Retry-After`, and the request log already
-carries the status, so throttling is visible without a new counter.
+upstream. A refusal is `429` with `Retry-After`.
+
+Note what "unthrottled" covers and what it does not: the limiters are per-route
+and `express.json` is app-wide ahead of them, so a refused POST has already paid
+for its (16kb-capped) body parse. What the ceilings protect is the *handler*
+work — the `verifyIdToken` round trip and the dispatch-carrying mint — not every
+byte of request handling.
 
 **The 403 on a disallowed origin is not a throttle.** Anything outside a browser
 omits `Origin` and is served normally, by design. Origin is a browser-honesty
@@ -169,14 +174,27 @@ this service, so every request arrives from the docker bridge gateway: at `0`
 the whole internet shares one bucket and any single caller throttles everyone,
 while too high a value lets a caller name its own address per request. Neither
 failure raises an error, fails a test, or reddens the healthcheck — so the value
-is **required at boot under `NODE_ENV=production`** rather than defaulted, and
-each request logs `proxied`, which is `false` on every line exactly when the
-limiter is bucketing the world together.
+is **required at boot under `NODE_ENV=production`**, **capped at 1** (the number
+of proxies actually in front of this service — requiring the value stops the
+too-low failure, and nothing else stopped the too-high one), and each request
+logs `proxied`.
+
+Read `proxied` as a necessary condition, not a proof, and note which direction it
+covers. It detects hops-too-**low** (an all-`false` log means either the limiter
+is mis-keyed *or* nothing reached the service through Caddy — both worth looking
+at). It is **deaf to hops-too-high**: a caller trusted as a hop writes its own
+`X-Forwarded-For`, `proxied` stays `true`, and the log looks healthy while the
+per-IP layer has dissolved. That direction is closed by the cap and by the
+container binding to `127.0.0.1` only, not by this field. A `429` also records which ceiling refused it
+(`rateLimited`), because a per-IP refusal and a service-wide one are opposite
+events wearing the same status code.
 
 Stated at its proven scope: this is a ceiling on accidental and single-source
 abuse. A caller with many source addresses can churn the bounded per-key table
 and evade the per-IP layer — which is why the service-wide layer is keyed on
-nothing and cannot be evaded at all. Neither layer is a defence against a
+nothing, and so cannot be evaded *by rotating source addresses*. Both layers are
+in-memory and process-local: a restart resets both windows, and a second replica
+would carry its own independent ceilings. Neither layer is a defence against a
 distributed attack.
 
 It is also **not** authorization. `/livekit-token` still mints a token for any
