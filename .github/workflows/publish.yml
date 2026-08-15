@@ -60,6 +60,10 @@ jobs:
           fi
           echo "$TAG is unused — ok to publish."
 
+      # The OCI host is aarch64 while the runner is amd64. A single-arch image
+      # pulls fine here and fails on the box with "no matching manifest" — a
+      # failure that building on the box used to hide entirely.
+      - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
 
       - name: Build and push
@@ -68,6 +72,7 @@ jobs:
         with:
           context: .
           push: true
+          platforms: linux/amd64,linux/arm64
           # Both tags are immutable: the version is what compose pins, the sha
           # is what ties a running container back to a commit.
           tags: |
@@ -75,6 +80,18 @@ jobs:
             ${{ env.IMAGE }}:sha-${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # Assert the manifest actually carries the host's architecture. Dropping
+      # the platforms line above would otherwise publish green and only fail
+      # later, on the box, at pull time.
+      - name: Verify the published manifest covers the deploy target
+        env:
+          TAG: ${{ env.IMAGE }}:${{ steps.version.outputs.value }}
+        run: |
+          archs=$(docker manifest inspect "$TAG" | jq -r '.manifests[].platform.architecture')
+          echo "$archs" | grep -qx arm64 || {
+            echo "::error::$TAG has no arm64 manifest; the OCI host is aarch64" >&2; exit 1; }
+          echo "arm64 present."
 
       - name: Summary
         run: |
