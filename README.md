@@ -59,8 +59,10 @@ laptop, and on a public mint it would let any page a developer's machine loads
 read `/exchange` and `/livekit-token`.
 
 A request carrying **no** `Origin` is served normally (curl, the bot, health
-checks); one carrying a **disallowed** `Origin` is refused with 403. That is not
-authentication — `Origin` is forgeable off-browser and the bearer credential
+checks). A **disallowed** `Origin` is handled differently by request kind: a
+preflight gets `204` *without* the allow headers, which is what makes the browser
+block the real request; a non-preflight request gets `403`. That second rule is
+not authentication — `Origin` is forgeable off-browser and the bearer credential
 remains the only thing that authorises — it closes the window where an honest
 browser still reaches the handler via a preflight cached from before an origin
 was revoked.
