@@ -10,6 +10,15 @@ name: publish
 on:
   push:
     branches: [main]
+    # Publishing is gated on an unused version tag, so a docs-only commit can
+    # never satisfy it — there is nothing shippable to bump the version FOR.
+    # Skip those rather than fail them; the guard should catch a forgotten bump
+    # on real code, not punish a README fix.
+    paths-ignore:
+      - '**.md'
+      - '.env.example'
+      - 'docs/**'
+      - 'LICENSE'
   workflow_dispatch:
 
 env:
