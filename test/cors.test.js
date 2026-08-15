@@ -10,6 +10,7 @@ import {
   InvalidAllowedOrigins,
   makeCorsMiddleware,
   resolveAllowLocalhost,
+  corsConfigFromEnv,
 } from '../src/cors.js';
 import { issueRealmCredential } from '../src/realmCredential.js';
 import { es256Keys } from './helpers.js';
@@ -425,6 +426,62 @@ test('requireAllowedOrigins refuses loopback origins when loopback is disallowed
     // ...and are still fine in dev, which is the default.
     assert.deepEqual(requireAllowedOrigins(o), [o]);
   }
+});
+
+// The series circuit that makes production *production*. Previously this lived
+// only in src/index.js, which no test loads — so inverting a boolean or
+// misspelling 'production' left every test green.
+test('corsConfigFromEnv closes both doors under NODE_ENV=production', () => {
+  // The whole loopback alias family is http, so requiring https closes it
+  // without enumerating names — including the ones a denylist kept missing.
+  for (const o of [
+    'http://localhost:8080',
+    'http://127.0.0.1:3000',
+    'http://[::1]:5000',
+    'http://[::ffff:7f00:1]:8080',
+    'http://app.localhost:8080',
+    'http://0.0.0.0:8080',
+    'http://world.imagineering.cc', // plaintext downgrade of the real origin
+  ]) {
+    assert.throws(
+      () => corsConfigFromEnv({ NODE_ENV: 'production', CORS_ALLOWED_ORIGINS: o }),
+      InvalidAllowedOrigins,
+      o,
+    );
+  }
+
+  // The flag door, same env.
+  assert.throws(
+    () => corsConfigFromEnv({
+      NODE_ENV: 'production',
+      CORS_ALLOWED_ORIGINS: 'https://world.imagineering.cc',
+      CORS_ALLOW_LOCALHOST: 'true',
+    }),
+    /refused when NODE_ENV=production/,
+  );
+
+  // And the real production config resolves.
+  assert.deepEqual(
+    corsConfigFromEnv({
+      NODE_ENV: 'production',
+      CORS_ALLOWED_ORIGINS: 'https://world.imagineering.cc',
+    }),
+    { allowedOrigins: ['https://world.imagineering.cc'], allowLocalhost: false },
+  );
+});
+
+test('corsConfigFromEnv keeps dev usable', () => {
+  assert.deepEqual(
+    corsConfigFromEnv({
+      CORS_ALLOWED_ORIGINS: 'http://localhost:8080',
+      CORS_ALLOW_LOCALHOST: 'true',
+    }),
+    { allowedOrigins: ['http://localhost:8080'], allowLocalhost: true },
+  );
+});
+
+test('corsConfigFromEnv still refuses a missing allowlist', () => {
+  assert.throws(() => corsConfigFromEnv({}), InvalidAllowedOrigins);
 });
 
 test('parseAllowedOrigins trims and drops empties', () => {

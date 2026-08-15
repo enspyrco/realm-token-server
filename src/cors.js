@@ -121,7 +121,7 @@ export function parseAllowedOrigins(raw) {
  *    Origin a browser will ever send. An explicit default port (`:80`/`:443`)
  *    is rejected by the same rule, since browsers omit it.
  */
-export function requireAllowedOrigins(raw, { allowLoopback = true } = {}) {
+export function requireAllowedOrigins(raw, { allowLoopback = true, requireHttps = false } = {}) {
   const origins = parseAllowedOrigins(raw);
   if (origins.length === 0) {
     throw new InvalidAllowedOrigins('is empty — set at least one browser origin');
@@ -157,11 +157,21 @@ export function requireAllowedOrigins(raw, { allowLoopback = true } = {}) {
         `entry "${o}" has a malformed host "${url.hostname}" — no leading, trailing or doubled dots`,
       );
     }
-    // Closing CORS_ALLOW_LOCALHOST in production while still enrolling
-    // `http://localhost:8080` there would leave the same hole at one port
-    // instead of all of them: on a public mint, any page the operator's machine
-    // loads could read /exchange and /livekit-token. Three names reach loopback,
-    // so all three are refused.
+    // THE production rule, and deliberately a requirement rather than a ban.
+    // Enumerating what loopback can be called is unwinnable — `localhost`,
+    // `127.0.0.0/8`, `[::1]`, `[::ffff:7f00:1]`, `app.localhost`, `0.0.0.0` are
+    // all the same machine, and the list keeps growing. Every one of them is
+    // `http:`, so requiring https in production closes the whole family at once,
+    // and closes the plaintext-downgrade footgun (`http://world.imagineering.cc`)
+    // in the same stroke.
+    if (requireHttps && url.protocol !== 'https:') {
+      throw new InvalidAllowedOrigins(
+        `entry "${o}" must be https when NODE_ENV=production`,
+      );
+    }
+    // Secondary, and only load-bearing in dev-shaped configs (where https is not
+    // required): keeps an obviously-wrong loopback entry out of a non-production
+    // deployment. In production the https rule above has already refused it.
     if (!allowLoopback && LOOPBACK_HOSTS.test(url.hostname)) {
       throw new InvalidAllowedOrigins(
         `entry "${o}" is a loopback origin, which is refused when NODE_ENV=production`,
@@ -191,4 +201,24 @@ export function resolveAllowLocalhost(env = {}) {
     throw new Error('CORS_ALLOW_LOCALHOST=true is refused when NODE_ENV=production');
   }
   return enabled;
+}
+
+/**
+ * The ONE door where NODE_ENV meets both CORS switches.
+ *
+ * Previously the production decision was split: index.js computed
+ * `allowLoopback` inline while cors.js owned `resolveAllowLocalhost`, so the
+ * series circuit that makes production *production* existed only in a file no
+ * test exercises — invert a boolean or misspell 'production' and every test
+ * still passes. Config resolution lives here so it can be struck directly.
+ */
+export function corsConfigFromEnv(env = {}) {
+  const isProduction = env.NODE_ENV === 'production';
+  return {
+    allowedOrigins: requireAllowedOrigins(env.CORS_ALLOWED_ORIGINS, {
+      requireHttps: isProduction,
+      allowLoopback: !isProduction,
+    }),
+    allowLocalhost: resolveAllowLocalhost(env),
+  };
 }
