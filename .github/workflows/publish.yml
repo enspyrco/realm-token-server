@@ -19,6 +19,10 @@ on:
       - '.env.example'
       - 'docs/**'
       - 'LICENSE'
+      # The compose pin is DEPLOYMENT config, not image content. Bumping which
+      # version the box runs must not try to republish that version — it already
+      # exists, which is the whole point of pinning it.
+      - 'docker-compose.yml'
   workflow_dispatch:
 
 env:
