@@ -348,6 +348,46 @@ test('resolveAllowLocalhost refuses the opt-in in production', () => {
   assert.equal(resolveAllowLocalhost({}), false);
 });
 
+// Pins the ABSENCE of a header. Enabling credentials mode is one helpful
+// setHeader away, and the day it lands alongside a cookie the allowlist becomes
+// the only thing between a page and a session. Absence enforced by nobody having
+// written the line is not enforcement.
+test('Access-Control-Allow-Credentials is never sent', async () => {
+  const preflight = await fetch(`${base}/exchange`, {
+    method: 'OPTIONS',
+    headers: { origin: ALLOWED, 'access-control-request-method': 'POST' },
+  });
+  assert.equal(preflight.headers.get('access-control-allow-credentials'), null);
+
+  const real = await fetch(`${base}/exchange`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', origin: ALLOWED },
+    body: JSON.stringify({ idToken: 'good' }),
+  });
+  assert.equal(real.headers.get('access-control-allow-credentials'), null);
+});
+
+// createApp must not quietly build a browser-refusing server for any caller that
+// isn't src/index.js.
+test('createApp requires allowedOrigins rather than defaulting it', () => {
+  assert.throws(
+    () => createApp({
+      verifyProviderIdToken: fakeVerify,
+      privateKeyPem: keys.privateKeyPem,
+      publicKeyPem: keys.publicKeyPem,
+      mintLiveKitToken: fakeMint,
+    }),
+    /allowedOrigins is required/,
+  );
+});
+
+// Node's URL keeps the brackets on an IPv6 host (`hostname === '[::1]'`), which
+// is what the boot validator's IPv6 branch matches. Pinned because it is exactly
+// the kind of thing that reads as broken and isn't.
+test('requireAllowedOrigins accepts a bracketed IPv6 literal', () => {
+  assert.deepEqual(requireAllowedOrigins('http://[::1]:8080'), ['http://[::1]:8080']);
+});
+
 test('parseAllowedOrigins trims and drops empties', () => {
   assert.deepEqual(
     parseAllowedOrigins(' https://a.example , ,https://b.example '),

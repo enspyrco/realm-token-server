@@ -16,9 +16,17 @@ export function createApp({
   publicKeyPem,
   mintLiveKitToken,
   ttlSeconds = 3600,
-  allowedOrigins = [],
+  allowedOrigins,
   allowLocalhost = false,
 }) {
+  // Required, not defaulted. A default of [] builds a server that is green on
+  // /healthz, fine under curl, and refuses every honest browser — the silent
+  // web-only failure this module exists to remove, reachable by any caller that
+  // isn't src/index.js. Pass [] explicitly to mean "serves no browser".
+  if (!Array.isArray(allowedOrigins)) {
+    throw new Error('createApp: allowedOrigins is required (pass [] to serve no browser)');
+  }
+
   const app = express();
 
   // FIRST, ahead of CORS: the preflight short-circuits with a 204 inside the
