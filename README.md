@@ -126,11 +126,105 @@ vanishing — the same silence this module exists to end, on the path that matte
 most. `origin` is truncated to 256 chars, and `originAllowed` is `null` rather
 than `false` when no `Origin` was sent, since those requests are served.
 
+`proxied` is carried for one reason: it is the only signal that says whether the
+per-IP rate limit is keyed on a real client address or on the proxy in front of
+it. It records *whether* the address came from a trusted proxy header, never the
+address — the fact is transport, the address is a person, and this log has no
+subject on purpose.
+
 `Origin` is attacker-controlled, so lines are emitted via `JSON.stringify`: a
 raw-string format would let a newline in `Origin` forge whole log entries.
 
 `/healthz` is skipped — the container healthcheck fires every 30s and
 `docker inspect` already answers what those lines would say.
+
+## Rate limiting
+
+Both POST routes do real work for a caller they have not yet authenticated:
+`/exchange` calls Firebase `verifyIdToken` (a network round trip, plus a cert
+fetch on the first call after a container start — 227ms cold vs 4ms warm), and
+`/livekit-token` mints a token carrying a `RoomAgentDispatch`, so hammering it
+amplifies into rooms rather than merely burning CPU here.
+
+Two fixed-window layers, per route, in this order (`src/rateLimit.js`):
+
+| layer | key | ceiling |
+| --- | --- | --- |
+| per-IP | client address | 30/min on `/exchange`, 30/min on `/livekit-token` |
+| service-wide | none | 600/min across both |
+
+Per-IP runs first, so one abusive source is refused out of its own bucket
+without first spending the budget everyone shares. `/healthz` and unknown paths
+are never throttled — the healthcheck must not be able to 429 itself into a
+restart loop — and preflights never reach the limiter, because CORS answers them
+upstream. A refusal is `429` with `Retry-After`. The JSON body parser is mounted
+per route *after* the limiters, so a refused request never pays for its parse and
+a malformed body still consumes budget rather than escaping the count.
+
+Read the numbers precisely, in two ways. **What is counted:** 600/min is 600
+requests that got *past* the per-IP layer, not 600 POST attempts — a caller
+refused per-IP never reaches it. **How it is counted:** these are fixed windows,
+not rolling ones, so the honest ceiling is *N per window* and a caller timing the
+boundary can land up to 2N in a short interval spanning two windows. At these
+values that burst is irrelevant, which is why a fixed window was chosen over a
+token bucket — but "600/min" is the window, not a rolling-minute guarantee.
+
+`Retry-After` is exposed via `Access-Control-Expose-Headers`, without which
+browser JS can see the 429 but not the backoff — and would retry immediately,
+which is the behaviour being limited. Note this is unobservable from any test
+using Node's `fetch`, which does not enforce CORS.
+
+**The 403 on a disallowed origin is not a throttle.** Anything outside a browser
+omits `Origin` and is served normally, by design. Origin is a browser-honesty
+check; this is the volume check.
+
+**`TRUST_PROXY_HOPS` decides whether the per-IP layer is per-IP.** Caddy fronts
+this service, so every request arrives from the docker bridge gateway: at `0`
+the whole internet shares one bucket and any single caller throttles everyone,
+while too high a value lets a caller name its own address per request. Neither
+failure raises an error, fails a test, or reddens the healthcheck — so the value
+is **required at boot under `NODE_ENV=production`**, **capped at 1** (the number
+of proxies actually in front of this service — requiring the value stops the
+too-low failure, and nothing else stopped the too-high one), and each request
+logs `proxied`.
+
+Read `proxied` as a necessary condition, not a proof, and note which direction it
+covers. It detects hops-too-**low** (an all-`false` log means either the limiter
+is mis-keyed *or* nothing reached the service through Caddy — both worth looking
+at). It is **deaf to hops-too-high**: a caller trusted as a hop writes its own
+`X-Forwarded-For`, `proxied` stays `true`, and the log looks healthy while the
+per-IP layer has dissolved. That direction is not closed by this field, and it is
+closed only *partially* elsewhere — state the boundary exactly:
+
+- **From the internet: closed.** The process listens on all interfaces, but
+  `docker-compose.yml` publishes it as `127.0.0.1:8791:8080`, so the only route
+  in from outside the box is through Caddy — which is the one hop `trust proxy`
+  is set for. The cap of 1 keeps it that way.
+- **From inside the box: open, and accepted.** Anything that can already reach
+  the container's `:8080` directly — a sibling service on the docker network, a
+  process on the host — is trusted as the proxy and may name its own client
+  address, dissolving the per-IP layer for itself. The service-wide ceiling still
+  holds. This is accepted rather than solved: a caller with that position already
+  shares a host with the ES256 signing key. Narrowing `trust proxy` from a hop
+  count to the gateway address would close it (claude-tasks#3190).
+
+Raising the cap is a code change, not a config change, and that is on purpose:
+adding a second proxy alters who is allowed to name the client, which is not a
+decision an env var should be able to make on its own. A `429` also records which ceiling refused it
+(`rateLimited`), because a per-IP refusal and a service-wide one are opposite
+events wearing the same status code.
+
+Stated at its proven scope: this is a ceiling on accidental and single-source
+abuse. A caller with many source addresses can churn the bounded per-key table
+and evade the per-IP layer — which is why the service-wide layer is keyed on
+nothing, and so cannot be evaded *by rotating source addresses*. Both layers are
+in-memory and process-local: a restart resets both windows, and a second replica
+would carry its own independent ceilings. Neither layer is a defence against a
+distributed attack.
+
+It is also **not** authorization. `/livekit-token` still mints a token for any
+`roomName` to any holder of a valid credential; admission control does not exist
+yet (claude-tasks#2850).
 
 ## Contract parity
 
@@ -148,7 +242,18 @@ npm install
 cp .env.example .env   # fill in — see comments
 npm start              # :8080
 npm test               # node --test (no real credentials needed)
+
+./scripts/dev.sh       # the real server on ephemeral keys — no .env needed
+./scripts/verify.sh    # boot it and assert over real HTTP — run before commit
 ```
+
+`npm test` exercises the app in-process with injected fakes. `scripts/verify.sh`
+boots the actual `npm start` entrypoint and asserts on the wire: the same env
+parsing, the same boot-time refusals, the same middleware order the container
+runs. It catches what a green unit suite cannot — an entrypoint that no longer
+boots, middleware mounted in the wrong order, a header that never reaches the
+wire — and it is the loop to run *before* `git commit`, so review and CI are not
+doing verification's job at ten times the cost.
 
 ## Deploy (OCI)
 
@@ -172,15 +277,23 @@ artifact.
 
 ### Promote — deploy that version
 
+Bump the tag **here**, commit it, then copy that file to the box. Never edit the
+box's copy in place — doing so is what left the repo saying 0.1.0 while the box
+ran 0.2.0, until the next deploy copied the stale repo pin back over the correct
+one (fixed in b5ccbbd; these steps are the other half of that fix).
+
 ```bash
-ssh <box>
-cd ~/apps/realm-token-server
-$EDITOR docker-compose.yml          # bump the image tag
-docker compose pull && docker compose up -d
-docker compose ps                   # wait for healthy (healthcheck hits /healthz)
+# in the repo, after the image for this version has published
+scp docker-compose.yml <box>:~/apps/realm-token-server/docker-compose.yml
+ssh <box> 'cd ~/apps/realm-token-server && docker compose pull && docker compose up -d && docker compose ps'
+# wait for healthy (the healthcheck hits /healthz)
 ```
 
-Rollback is the same three commands with the previous tag — the old image is
+If the version being promoted introduces a **required** env var, add it to the
+box's `.env` *before* the pull — the container refuses to boot without it and
+will restart-loop until the variable exists.
+
+Rollback is the same two commands with the previous tag committed here — the old image is
 still in the registry and still immutable.
 
 Deliberately a human step. This service mints credentials, so an auth boundary
@@ -215,7 +328,14 @@ changed in the GitHub UI — there is no REST or GraphQL endpoint for it
 ### Host prerequisites
 
 The box's `.env` must contain every variable in `.env.example` — including
-`CORS_ALLOWED_ORIGINS`, which is required at startup. A container that boots
-without it exits immediately rather than serving a web-broken deployment. The
-Dockerfile sets `NODE_ENV=production`, so allowlist entries must be https DNS
-names.
+`CORS_ALLOWED_ORIGINS` and `TRUST_PROXY_HOPS`, both required at startup. A
+container that boots without them exits immediately rather than serving a
+web-broken deployment or a rate limiter that buckets the whole internet
+together. The Dockerfile sets `NODE_ENV=production`, so allowlist entries must
+be https DNS names.
+
+> **Deploy order matters for `TRUST_PROXY_HOPS`.** Add `TRUST_PROXY_HOPS=1` to
+> the box's `.env` *before* bumping the image tag. It is absent from the current
+> `.env`, so an image from this version pulled first will refuse to boot and the
+> container will restart-loop — loudly and by design, but only recoverable by
+> editing `.env` on the box.

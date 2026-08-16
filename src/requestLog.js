@@ -75,6 +75,27 @@ export function makeRequestLogger({ log = console.log, now = Date.now, skipPaths
           originAllowed: rawOrigin === null
             ? null
             : Boolean(res.getHeader('access-control-allow-origin')),
+          // The falsifier for the per-IP rate limiter, not a general-purpose
+          // field. That limiter is only per-IP if `trust proxy` is set to match
+          // the real deployment; set too low behind Caddy, every request appears
+          // to come from the docker bridge gateway and the entire internet
+          // shares one bucket. Nothing about that failure is visible — the
+          // limiter still returns 429s, just to the wrong population — so the
+          // one bit that distinguishes it is recorded per request.
+          //
+          // false on every deployed line means the limiter is not doing what
+          // this service believes it is doing. The ADDRESS is deliberately not
+          // logged: whether the client IP came from a trusted proxy header is a
+          // transport fact, while the address itself identifies a person, and
+          // this log has no subject on purpose.
+          proxied: typeof req.ip === 'string' && typeof req.socket?.remoteAddress === 'string'
+            ? req.ip !== req.socket.remoteAddress
+            : null,
+          // Which ceiling refused this, or null. A status of 429 alone cannot
+          // distinguish "one caller is noisy" from "the service-wide circuit
+          // breaker is turning everyone away", and those want different
+          // responses from whoever is reading.
+          rateLimited: typeof req.rateLimited === 'string' ? req.rateLimited : null,
         }));
       } catch (err) {
         // Telemetry must never be a liveness dependency. This runs in an
