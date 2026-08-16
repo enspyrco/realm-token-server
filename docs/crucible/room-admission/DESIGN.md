@@ -1,323 +1,347 @@
-# DESIGN — room admission for Realm
+# DESIGN — room admission for Realm (v3, post-temper)
 
-**Status:** cast, folded, **not yet tempered**. Do not build from this until `TEMPER.md` exists and
-records a surviving verdict. A design temper is *not* a substitute for a `/cage-match` on the
-eventual diff.
+**Status:** recast after a full 4-way strike (`TEMPER.md`, round 1). **This v3 is itself un-struck**
+— a substantial post-temper recast is not covered by the strike that produced it. Round 2 required
+before build. And a design temper is never a substitute for a `/cage-match` on the eventual diff.
 
-**Cast twice** (per SKILL.md Reference: a second Cast by the same author is where the gain is).
-The v1 spine was "add a `canJoin` predicate and call it before the mint." The re-cast found that
-predicate was the *second* question, and that the first one — *what does `visibility` actually
-mean?* — dissolves most of the difficulty. What follows is v2.
+**What changed from v2, and why.** v2's spine was *"`RoomVisibility` is two axes wearing one enum,
+so split it."* **All four families killed that independently.** Tesla's blow landed hardest:
+`isPublic` **already is** the listing axis, so the independence argument needed a second *field*,
+not a breaking public-type split in a repo heading open-source. The 2×2 was a true *diagnosis*
+promoted to a *mandate* without argument — a laundered assumption, visible only by reading
+`CRUCIBLE.md`'s excitement next to v2's §2.
+
+v3 ships the smaller thing. What survived is the *enforcement location* and the *asymmetry*, not
+the taxonomy.
 
 ---
 
-## 1. The problem, stated at the right altitude
+## 1. The problem
 
-`POST /livekit-token` mints a LiveKit token for any `roomName` a valid credential holder requests
-(`src/mint.js:26-32`). There is no admission check. Every signed-in user, including an anonymous
-guest with a throwaway uid, can enter any room in the world by typing its name — and, because
-LiveKit's `room.auto_create` defaults to `true` and no `roomCreate` grant is needed for it, can
-also conjure unbounded new rooms on the deployment.
+`src/mint.js:26-32` reads `req.body.roomName`, checks only that it is a non-empty string, and mints
+a LiveKit token granting `roomJoin` + `canPublish` for it (`src/livekit.js:15-21`). Any signed-in
+user — including an anonymous guest with a throwaway uid — enters any room by typing its name, and
+because LiveKit's `room.auto_create` defaults to `true`, can also conjure unbounded new rooms.
 
-But the reason this has survived two hardening sessions is not that it is hard to *check* something
-before minting. It is that **there is nothing to check.** The permission vocabulary in this system
-answers a different question than the one the risk is about:
+Nothing in the system answers *who may be present*. `canEdit` (`room_data.dart:56`) is the nearest
+neighbour and is the wrong lattice — a classroom's students must enter and must not edit.
 
-| Existing concept | Answers | Location |
-|---|---|---|
-| `canEdit(userId)` | who may **modify** a room | `room_data.dart:56` |
-| `isPublic` | whether a room **appears in listings** | `room_service.dart:101,161` |
-| `RoomVisibility` | (intended) who may **see that a room exists** | engine enum |
+> **Remark (not the spine).** `unlisted` reads as incoherent for *entry* — "the door is unlocked and
+> the sign is painted over" — because listing and admission are genuinely different questions, and
+> the enum only ever modelled listing. That explains why
+> `firestore_room_config_store.dart:21-30` had to **throw** on `private` rather than lie. It is a
+> useful diagnosis. **It does not entail splitting the type**, and v2 made exactly that unargued
+> leap. `isPublic` already carries listing; admission needs one new field beside it.
 
-Nothing answers *who may be present*. `canEdit` is the nearest neighbour and it is the wrong
-lattice — a classroom's students must enter and must not edit.
+## 2. Where admission is enforced
 
-## 2. The spine: `RoomVisibility` is two axes wearing one enum
+**At token-mint time, and only there** — forced, not chosen. LiveKit has no pre-join admission hook;
+webhooks (`participant_joined`) fire *after* the media connection is established. Whatever the mint
+grants is granted. Carnot independently searched and found no such hook; Tesla pinned the correct
+scope for the claim: *"webhooks + RoomService + Cloud project settings"*, not "we read the webhook
+enum." If a Cloud pre-connect authorization callback exists, this location is wrong and v3 recasts.
 
-The tell is `unlisted`. Read as a *listing* state it is perfectly coherent: the room does not appear
-in a directory, but anyone with the id can enter. Read as an *entry* state it is incoherent: the
-door is unlocked and the sign is just painted over.
+### Separate the decision from the enforcement
 
-It is incoherent because the enum is secretly a product of two independent axes:
-
-|  | **listed** | **unlisted** |
-|---|---|---|
-| **open** (anyone may enter) | `public` | `unlisted` |
-| **closed** (admission required) | ***unrepresentable*** | `private` |
-
-Three of four states have names. The fourth — **listed + closed** — has no name and cannot be
-expressed, and it is exactly the education tier's requirement (`packages/realm/DESIGN.md:170`): a
-classroom that is *visible* in the directory so students can find it, and *closed* so only enrolled
-students enter. That absence is not an oversight in the enum; it is the enum being one-dimensional
-about a two-dimensional thing.
-
-**So the primitive is not `canJoin`. It is the split.** `canJoin` follows from it in a few lines;
-without it, `canJoin` gets bolted onto a type that already lies.
+This repo already holds the right shape one level down: `/exchange` holds the ES256 **private** key
+and signs; `/livekit-token` holds only the **public** key and verifies, so a bug in the mint cannot
+forge a credential (`src/realmCredential.js:8-11`). Apply the same asymmetry to admission.
 
 ```
-RoomListing   ::= listed | unlisted      // discovery — who learns the room exists
-RoomAdmission ::= open   | closed        // entry     — who may be present
-```
-
-This also explains, and retires, the engine's existing refusal. `firestore_room_config_store.dart:
-21-30` throws on `RoomVisibility.private` because the backend "cannot gate reachability without a
-Firestore security-rules change." That diagnosis mislocates the door — **room presence is a LiveKit
-session, not a Firestore read**, and Firestore rules have never gated it and cannot. The refusal was
-right; its stated reason was wrong; the correct enforcement point is the token mint.
-
-## 3. Where admission is enforced
-
-**At token-mint time, and only there.** This is forced, not chosen: LiveKit has no pre-join hook
-(`RESEARCH.md §1`). Webhooks fire after the media connection is up. Whatever the mint grants is
-granted.
-
-### The shape: separate the *decision* from the *enforcement*
-
-This repo already has exactly the right structure one level down, and the design copies it upward.
-Today `/exchange` holds the ES256 **private** key and signs; `/livekit-token` holds only the
-**public** key and verifies, so a bug in the mint cannot forge a credential
-(`src/realmCredential.js:8-11`). Apply the same asymmetry to admission:
-
-- **`/exchange` decides.** It has the caller's Firebase ID token, so it can perform an authoritative
-  admission lookup, and it holds the private key, so it can sign the result.
-- **`/livekit-token` enforces.** It verifies a signed decision and compares one field. It never
-  performs a lookup, never holds a credential, never knows a policy.
-
-Concretely, `/exchange` gains a **room-scoped mode**. The existing identity-scoped call is unchanged.
-
-```
-POST /exchange { idToken }                      -> identity credential  (today; unchanged)
-POST /exchange { idToken, roomName, joinCode? } -> ROOM-SCOPED credential { sub, prov, room, exp }
+POST /exchange { idToken }                      -> identity credential (today; unchanged)
+POST /exchange { idToken, roomName, joinCode? } -> ROOM-SCOPED credential { sub, prov, room, jti, exp }
 POST /livekit-token  + room-scoped credential
      -> mints the LiveKit grant with room = claims.room   (the body carries no room at all)
 ```
 
-**The mint takes the room from the credential, not the request body** (folded in at F1). This is
-deliberately *not* a comparison. An earlier cast had `/livekit-token` check
-`cred.room === req.body.roomName` and 403 on mismatch — a guard around a window that should never be
-open. Reading the room from the signed claim deletes the mismatch class instead of defending it: a
-caller **cannot express** "authorized for A, mint for B", because the request contains exactly one
-room and it is the signed one. The body's `roomName` becomes vestigial and should be rejected rather
-than ignored, so a stale client fails loudly instead of silently getting a room it did not ask for.
+**The mint takes the room from the credential, not the body.** Unanimously the strongest surviving
+element — Carnot: *"the bug cannot happen because the variable is gone."* This is not a comparison
+to get right; a caller **cannot express** "authorized for A, mint for B." A body `roomName` is
+**rejected**, not ignored, so a stale client fails loudly.
 
-Two consequences that must be handled rather than assumed:
+Two guards that must land with it:
 
-- **`roomName` must be validated before it is used to build any Firestore path.** Today
-  `src/mint.js:27` accepts any non-empty string; under this design it becomes a document id, and
-  `foo/bar/baz` changes the path shape. Positive charset (`^[A-Za-z0-9_-]{1,64}$` proposed), checked
-  at the room-scoped `/exchange`. This is a **pre-existing** defect, newly reachable.
+- **`roomName` is validated against a positive charset (`^[A-Za-z0-9_-]{1,64}$`) before it is used
+  to build any Firestore path.** Today any non-empty string is accepted; under this design it
+  becomes a document id, and `foo/bar/baz` changes the path shape. Pre-existing defect, newly
+  reachable.
 - **A missing room document is a refusal.** "No config, so nothing to check, admit" is the denylist
-  failure wearing a different hat. Empty means closed everywhere, including when empty means absent.
+  failure wearing a different hat. Empty means closed, including when empty means absent.
 
-This answers the brief's constraint 5 precisely. Room rights genuinely cannot be baked into the
-*identity* credential — it is minted before the user picks a room. But a **second, room-scoped**
-exchange happens *after* the user picks, so the room is known, and a short TTL bounds staleness to a
-parameter rather than leaving it a structural flaw.
+## 3. Capability amplification — the flaw that nearly shipped
 
-### The admission lookup costs no new secret
+**This is the most important section in the document, and v2 did not contain it.**
 
-`/exchange` already holds the caller's Firebase ID token. Firebase's REST API accepts that token as
-`Authorization: Bearer` and **enforces Security Rules as that user** (`request.auth.uid` populated);
-a service-account OAuth2 token, by contrast, **bypasses rules entirely** and uses IAM. So the cheap
-path is also the *less privileged* one:
+v2 specified a hashed, expiring, **use-counted** `joinCode`, and then had `/exchange` convert it
+into a bearer JWT carrying *none* of those properties. `maxUses` died at the first signature: a
+one-use exam code minted an unlimited-use publisher pass valid until `exp`. The Fold that hunted
+precisely this class (F4) ran and missed it. Tesla found it.
 
-| | New secret to store/rotate/back up | Reads as | Rules enforced |
-|---|---|---|---|
-| Service account + Admin SDK | **Yes** | admin | **No — bypassed** |
-| **Caller's ID token + Firestore REST** ✅ | **No** | the caller | **Yes** |
+The rule: **a derived credential may never outlive or out-scope the capability that produced it.**
 
-This preserves the service's "no Firebase service account" property, which `RESEARCH.md §3` shows
-was always a claim about *verification* and is now also true of *authorization*.
+**v3 got the rule right and the mechanism wrong, and round 2 killed the mechanism.** v3 had the
+credential carry a `jti` that `/livekit-token` *records*, making code-derived tickets single-use.
+All three families struck it: "records it" is not a claim, it is a replica set — an atomic
+check-and-set, shared across every token-server process, with TTL eviction — and it makes a
+legitimate retry on a flaky network **indistinguishable from a replay**, so a lost response locks
+the user out.
 
-**The trap this must not fall into:** the check must not be "can this user read the room document."
-Read is not join — conflating them is the exact error the whole design exists to fix. The rules must
-expose an **explicit admission fact**.
+Carnot then supplied the dissolution: **single-use tickets buy nothing anyway.** The `joinCode`
+itself remains a reusable bearer capability until it expires or is revoked, so a leaked code simply
+mints fresh single-use tickets forever. The state store guarded a window that was never closed.
 
-## 4. The membership primitive (engine-owned, `tech_world`)
+**So v4 deletes the `jti` mechanism rather than implementing it.** The mint stays stateless — the
+property that made it safe in the first place. What actually bounds the capability:
 
-Mechanism, not policy — per Nick's framing, the engine expresses admission and world builders decide
-what it means. Zanzibar's separation is the model at small scale: the engine ships the relation, the
-storage shape and the check; the world ships the policy that populates it.
+- **Expiry and revocation on the code**, which is where the reusability genuinely lives.
+- **A 120-second room-scoped credential TTL**, covering pick-a-room → connect and nothing more.
+  Re-entry mints a new credential, which **re-runs the admission check** — refresh *is*
+  re-authorization.
+- **Eviction (§4) for presence**, because — Carnot's correction, and it matters — a LiveKit access
+  token's `exp` gates **connection, not continued presence**. v3's `min(livekitTtl, credential exp)`
+  binding would therefore not have bounded a live session even if it had worked; it would only have
+  broken reconnect. The LiveKit grant TTL stays independent.
+
+**Residual, stated plainly rather than engineered around:** a leaked `joinCode` admits its holder
+repeatedly until it expires or an owner revokes it. That is the security model of every
+"anyone with the link" share. Worlds needing one-shot admission must issue short-expiry
+single-recipient codes; the engine does not pretend to enforce single use.
+
+## 4. Revocation is a separate primitive from admission
+
+v2 said mid-session eviction was "out of scope." Three families called that a fatal gap, and for the
+design's own motivating example they are right — Kelvin: *"an evicted participant is not evicted…
+mission failure."* v2 rejected `removeParticipant` as an *admission* mechanism (correct: it admits
+first, then evicts, so the intruder sees and hears) and then wrongly kept rejecting it as
+*revocation*, which is the only vendor lever that exists after connect.
+
+**Admission and eviction are two primitives, not one.**
+
+| | Mechanism | Bounds |
+|---|---|---|
+| **Admission** | the mint, gated on `canJoin` | who may enter |
+| **Eviction** | `RoomService.removeParticipant` | who may remain |
+
+Removing a member SHOULD trigger eviction of that principal's live session. Whether that is
+automatic or an owner/moderator action is a **policy** question for consumers; the engine must
+expose the lever either way. With 120s credentials, the *minting* window is bounded to two minutes
+even if eviction is never wired — but **presence is not**, and §3 no longer pretends otherwise.
+
+**What eviction actually costs (round 2 corrected this in both directions).** Two families claimed
+`removeParticipant` needs "a privileged LiveKit credential the design claims not to have." That is
+**wrong, and the evidence refutes it**: `src/index.js:23-24` already loads `LIVEKIT_API_KEY` and
+`LIVEKIT_API_SECRET`, and `src/livekit.js:9` already signs with them — the server can mint a
+`roomAdmin` token today at **zero new secret**. Tesla got this right where the other two did not.
+
+What *is* genuinely undrawn is the **watcher**: something must observe a member tuple being deleted
+and call `RoomService`. That is a Firestore-side privileged observer (a Cloud Function, or a
+polling worker) — the service-account-shaped component §7 spent its life avoiding, now required on
+a different edge. Two further gaps this design does not close:
+
+- **`sub` ≠ LiveKit participant identity** unless the mint pins them equal. It does today
+  (`src/mint.js:31` passes `identity: claims.subject`), so eviction can address a principal — but
+  that equality is now load-bearing and must be asserted by a test, not left as a coincidence.
+- Owner-initiated eviction needs an endpoint with its own authorization, which is a design of its
+  own. **Step 8 is scoped as its own design pass, not a line item.**
+
+## 5. The admission primitive (engine-owned, `tech_world`)
+
+One new field beside the existing `isPublic`, and two subcollections. No enum rename, no breaking
+public-type change.
 
 ```
 rooms/{roomId}
-  listing:   "listed" | "unlisted"
-  admission: "open"   | "closed"
+  isPublic: bool                    // UNCHANGED — listing. Already shipped, already queried.
+  admission: "open" | "closed"      // NEW — entry. Absent is a migration bug, not a default.
 
-rooms/{roomId}/members/{uid}      // identity-based admission — a Zanzibar-shaped tuple
-  role: <world-defined string>    // engine does not interpret; worlds do
+rooms/{roomId}/members/{uid}        // identity-based admission
+  role: <world-defined string>      // engine does not interpret; worlds do
   addedBy, addedAt
 
-rooms/{roomId}/invites/{codeHash} // capability-based admission — for guests
-  expiresAt, maxUses, uses, createdBy
+rooms/{roomId}/invites/{codeHash}   // capability-based admission (guests)
+  expiresAt, revoked, createdBy     // NOTE: no `uses` counter — see §6
 ```
 
-Security rules — the load-bearing part, because it is what makes the check honest:
+Security rules — the load-bearing part:
 
 ```
 match /rooms/{roomId}/members/{uid} {
-  allow read: if request.auth.uid == uid;   // you may read YOUR OWN admission, and only that
+  allow read: if request.auth.uid == uid;   // your OWN admission, and only that
 }
 ```
 
-A user can ask "am I admitted?" and cannot enumerate the roster. The fact exposed is *admission*,
-not *readability* — the trap in §3 is closed by construction rather than by discipline.
+A user may ask "am I admitted?" and cannot enumerate the roster. The fact exposed is **admission**,
+not **readability** — the read≠join conflation is closed by construction, not by discipline.
 
 ### The predicate
 
 ```
 canJoin(principal, room, presentedCapability?) :=
-     room.admission == open
+     room.admission == "open"
   OR exists(rooms/{room}/members/{principal.uid})
   OR validCapability(presentedCapability, room)
 ```
 
-**Positive by construction, and closed when empty.** Every arm names someone explicitly permitted;
-there is no arm that admits by failing to match. A room with no members, no invites and
-`admission: closed` admits nobody — including its own owner unless the owner holds a member tuple,
-which `createRoom` must write. This matters because of local precedent: the CORS loopback saga in
-PR #3 cost three cage-match rounds by being a denylist twice before being a positive definition
-(`feedback_repeated_finding_class_wrong_mechanism`).
+**Positive by construction; closed when empty.** Every arm names someone explicitly permitted; no
+arm admits by failing to match. A closed room with no members and no invites admits nobody — so
+`createRoom` must write the owner's member tuple, **in the same transaction as the room document**
+(a partial failure otherwise strands an owner outside their own room, unable to repair).
 
-### What a guest is
+`prov` is passed to the predicate so a world **may** refuse `anonymous` on closed rooms. The engine
+does not hardcode that — it would be the engine choosing a social policy.
 
-An anonymous guest gets a **fresh Firebase uid on every sign-in** (`claude-tasks#3160`). So a roster
-keyed on uid is broken *by construction* for guests — a base case, not an edge case. The design
-answers it by making the two admission paths structurally different rather than patching one:
+### The third lattice: `canPublish`
+
+`src/livekit.js:15-21` grants `canPublish`/`canPublishData` to everyone admitted. But §1's own
+motivating student must enter, must not edit — **and must not blast audio.** Admission was modelled
+as boolean while the live grant is already a capability set.
+
+**v3's answer was wrong twice and round 2 caught both.** It said "subscribe-only unless the member
+tuple's `role` says otherwise", which (a) contradicted the claim that the engine does not interpret
+`role` — Carnot: *"a magic string role is coupling by folklore"* — and (b) **muted two of the three
+`canJoin` arms**, because guests and open-room joiners have no member tuple at all. Tesla: *"the
+visiting speaker with the link, the open lobby: all listen-only."*
+
+**v4 makes it an explicit engine-owned field, not a dialect hidden in a string:**
+
+```
+rooms/{roomId}.defaultCanPublish: bool     // applies to open-room joiners and guests
+rooms/{roomId}/members/{uid}.canPublish: bool?   // per-member override; null inherits the default
+```
+
+`role` returns to being **fully opaque** — worlds interpret it, the engine never reads it. The
+migration sets `defaultCanPublish: true` on every existing room, preserving today's behaviour
+exactly; a classroom sets it `false` and grants publish per member.
+
+## 6. What a guest is
+
+Anonymous Firebase users get a **fresh uid on every sign-in** (`claude-tasks#3160`), so a uid-keyed
+roster is broken *by construction* for guests — a base case, not an edge case.
 
 > **Members are admitted by identity. Guests are admitted by capability.**
 
-A guest presents an unguessable `joinCode`; `/exchange` hashes it and checks for an unexpired invite
-document. Identity is never consulted, so uid churn is irrelevant — the question was never "who are
-you." This is the W3C capability-URL model (GitHub private Gists, Flickr Guest Passes), with its
-known and accepted cost: **a capability is transferable — whoever holds it is admitted.** It must
-therefore be expiring, revocable, use-countable, and it must never be the path into a members-only
-room. A world that wants no guests issues no invites; the mechanism does not force a social model.
+A guest presents an unguessable `joinCode`; `/exchange` hashes it and looks up
+`rooms/{id}/invites/{codeHash}`. Identity is never consulted, so uid churn is irrelevant — the
+question was never "who are you."
 
-## 5. Defence in depth: `auto_create: false`
+**Invites are GET-only.** v2 wanted use-counting, and Tesla showed it is unimplementable safely on
+this path: a rule loose enough to let the caller increment `uses` is loose enough to let them set
+`maxUses: 999999` or clear `expiresAt`, and a rule tight enough to prevent that cannot count at all
+without a privileged writer — the exact thing this design avoided. So **entropy and expiry do the
+work**: ≥128-bit server-generated codes, stored hashed, with `expiresAt` and a `revoked` flag.
+Revocation is a write by the *owner*, under a rule that permits only owners.
 
-Independently of the predicate, set LiveKit `room.auto_create: false` and create rooms explicitly
-server-side. Then an unknown room name fails closed **at the LiveKit layer**, without reference to
-the predicate — so a bug in the predicate does not also become unbounded room creation. This is the
-only part of the design that holds if everything else is wrong, which is why it is worth its cost.
+**The invite read rule is part of the design, not an implementation detail.** v3 specified the
+member rule and left this one to the implementer, which round 2 correctly called the guest path's
+single point of failure — *"round 1 died on a rule that was one bit too loose; v3 deleted the counter
+and forgot the read."* Omit it and every guest is dark; write it loose and the collection lists.
 
-**Open variable:** whether the deployment is LiveKit Cloud or self-hosted, and whether Cloud exposes
-`auto_create`. Not determinable from the repo — it carries only `LIVEKIT_API_KEY`/`SECRET`. Must be
-confirmed before this step is planned, not assumed.
+```
+match /rooms/{roomId}/invites/{codeHash} {
+  allow get: if true;    // knowing the hash IS the capability; the doc holds no secret
+  allow list: if false;  // MUST be false — listing defeats the entropy entirely
+  allow write: if request.auth.uid == get(/databases/$(db)/documents/rooms/$(roomId)).data.ownerId;
+}
+```
 
-## 6. Build order (core first; each step independently useful)
+`allow get` without `allow list` is the whole security property: an attacker who cannot enumerate
+must guess 128 bits. The invite document must therefore contain **nothing sensitive** — no
+`createdBy` identity, no room contents — since possession of the hash grants the read.
 
-| # | Step | Repo | Useful alone? |
+Accepted, and written plainly rather than implied: **a capability is transferable — whoever holds it
+is admitted.** That is the security model of every "anyone with the link" share on the web. §3's
+`jti` single-use rule bounds the *derived ticket*; it does not bound the code itself.
+
+## 7. Failure modes of the caller-ID-token lookup
+
+`/exchange` already holds the caller's Firebase ID token. Firestore REST accepts it as
+`Authorization: Bearer` and **enforces Security Rules as that user**; a service-account token
+**bypasses rules entirely** via IAM. So the cheap path is also the less privileged one — but it has
+three costs v2 did not price:
+
+- **App Check is a hard incompatibility.** If this project, or any OSS consumer, enforces App Check
+  on Firestore, a server-side REST GET carrying only an ID token fails **for everyone** — the first
+  hardening pass takes every join dark. Documented as a stated limitation.
+- **Refusal is overloaded.** Rules-deny, missing document, expired ID token, disabled API, billing
+  and App Check all collapse into one refusal. The client may see one status; the server must
+  **distinguish and log them separately**, or an availability cliff reads as a clean "not admitted."
+- **The ID token becomes load-bearing in a second place**, and `checkRevoked=false`
+  (`src/firebase.js:14`) means a revoked account still verifies until token expiry.
+
+If any of these bite, the fallback is a service account — a named, priced retreat, not a surprise.
+
+## 8. Build order (recast; C6 struck)
+
+v2 claimed steps 2+3 could land before the engine data model. **All three adversaries called that a
+stand-in predicate by another name**, and they are right: with no `admission` field written,
+`/exchange` either defaults missing→open (policy in the token server — the very failure F3 forbids)
+or missing→refuse (a global outage). There is no third path.
+
+| # | Step | Repo | Gate |
 |---|---|---|---|
-| 1 | Split `RoomVisibility` → `listing` × `admission`; add `members`/`invites` + rules; implement `canJoin`; make `createRoom` write the owner's member tuple | `tech_world` | Yes — retires the `private`-throws refusal |
-| 2 | `/exchange` room-scoped mode: verify ID token, call the admission lookup, mint a credential carrying `room` + short TTL | `realm-token-server` | Yes — a room-scoped credential is strictly stronger than an identity one |
-| 3 | `/livekit-token` mints with `room = claims.room`; reject a credential with no `room` claim. **Red-prove.** | `realm-token-server` | Yes — this is the fix |
-| 4 | `auto_create: false` + explicit room creation | infra | Yes — independent |
+| **0** | **Deployment-wide** switch: refuse `prov == "anonymous"` at the mint entirely | `realm-token-server` | ships alone, no new data, no read |
+| **1** | **Measure** the LiveKit deployment: Cloud vs self-hosted, actual `auto_create` | infra | **blocking prerequisite** |
+| 2 | Engine: `admission` field + `members`/`invites` + rules + `canJoin`; `createRoom` writes the owner tuple transactionally | `tech_world` | **HANDOFF** |
+| 3 | **Migration** writes `admission` + `defaultCanPublish` on every live room, and owner member tuples; ships with **backfill verification + stranded-room repair tooling** | `tech_world` | data before code |
+| 4 | `/exchange` room-scoped mode: verify ID token → `canJoin` → mint `{room, jti, exp:120s}` | `realm-token-server` | after 3 |
+| 5 | Clients adopt the room-scoped flow | `tech_world` | rollout |
+| 6 | `/livekit-token` mints from `claims.room`; **refuses** an unscoped credential. **Red-prove.** | `realm-token-server` | `/cage-match` by law |
+| 7 | `auto_create: false` + explicit room creation, **if step 1 says it is settable** | infra | else deleted |
+| 8 | Eviction: removal triggers `removeParticipant` | either | separate primitive (§4) |
 
-**Deployment ordering is a hard constraint, not a preference** (folded in at F5). Steps 2 and 3 are
-independently *useful* but not independently *deployable*: the moment step 3 lands, every client
-still presenting an identity-scoped credential is refused — which is every client until step 2's
-flow has rolled out and been adopted. Ship 2 → roll clients forward → **then** ship 3. Step 3 fails
-closed on a credential with no `room` claim, which makes that rollout a hard prerequisite rather
-than a soft one.
+**Step 0, corrected by round 2, and deliberately under-sold.** v3 wrote it as "refuse `anonymous` on
+non-public rooms" — which Tesla showed is a poison pill: *publicness is `isPublic`, the listing axis
+this whole recast exists to stop using as a door.* Deciding per-room needs a Firestore read, so
+step 0 would have reconflated listing with admission **in the very first ship**, and pre-empted open
+question 2 before Nick answers it.
 
-**The red-prove, restated.** F1 removed the comparison, so there is no "enforcement call" to delete.
-The mutation test is sharper instead: **change `src/mint.js` to read `req.body.roomName` instead of
-`claims.room`, and the test must go red.** That mutation *is* the historical bug, so the test proves
-it stays dead. Given `feedback_priority_inversion_evidence` — last session's ceiling on this exact
-route was the least-witnessed thing in a PR that existed because of this route — the test must
-exercise the refusal path itself, not merely the happy path beside it.
+So step 0 is a **deployment-wide switch**, off by default: this deployment either accepts anonymous
+principals or it does not. No per-room read, no listing axis, no policy baked into a room.
 
-**No deadlock between the repos.** Steps 2+3 land against a policy that is initially trivially open
-(`admission: open` for every existing room, matching today's behaviour exactly) and get strictly
-stricter as step 1's data lands. That is *not* a local stand-in predicate — the token server never
-decides policy, it reads whatever the engine's authoritative data says. Step 3's enforcement is a
-field comparison whose strength lives entirely in step 1.
+And it is **a risk trim, not admission control** — Carnot's framing, and the honest one. It closes
+the worst sentence in `claude-tasks#2850` ("including an anonymous guest") for a deployment willing
+to require sign-in. Any authenticated user can still request any room. It is worth shipping because
+it is free and reversible, not because it fixes the bug. Naming it that way is the point:
+`feedback_prose_overclaims_the_code`.
 
-**Migration:** existing rooms have `isPublic` defaulting **true** (`room_data.dart:22,98`) → map to
-`listed` + `open`, which preserves current behaviour exactly. Nothing breaks on deploy.
+**Step 6's red-prove.** There is no "enforcement call" to delete (§2 removed the comparison), so the
+mutation test is sharper: **change `src/mint.js` to read `req.body.roomName` instead of
+`claims.room`, and the test must go red.** That mutation *is* the historical bug. Per
+`feedback_priority_inversion_evidence`, the test must exercise the **refusal** path, not the happy
+path beside it.
 
-## 7. Blast radius and consent spine
+## 9. Blast radius
 
-- Step 3 changes a **trust boundary** → `/cage-match` by law, not self-review.
-- Step 3 can lock users out of rooms they can reach today. The migration in §6 makes the initial
-  state behaviour-identical; every subsequent tightening is a deliberate data change by a world
-  builder, not a deploy.
-- Step 1 changes a **public engine type** in a repo heading open-source → a breaking change for any
-  existing consumer. `tech_world` is the only consumer today; confirm before assuming.
-- The `joinCode` is a bearer capability appearing in request bodies. It must never be logged.
-  `src/requestLog.js` exists and logs requests — **auditing it for capability leakage is part of
-  step 2, not a follow-up.**
+Breaking Flutter types (avoided in v3 — additive field only), Firestore rules migration, client
+exchange-flow change, request-log redaction (`joinCode` must never be logged — auditing
+`src/requestLog.js` is part of step 4, not a follow-up), anonymous-guest semantics, room-creation
+flow, LiveKit infra config, tests that mutate the historical bug, and support docs explaining why
+old identity credentials stop working at step 6.
 
-## 8. Rejected alternatives
+## 10. Open — Nick's calls, surfaced not tie-broken
 
-1. **Post-hoc eviction** — subscribe to `participant_joined`, evict via `removeParticipant`. Rejected:
-   admits first. In a private classroom the intruder is present, sees and hears, then leaves. That is
-   reconciliation, not admission.
-2. **Service account + Admin SDK lookup at mint time** — rejected: adds a secret to store/rotate/back
-   up *and* bypasses Security Rules (strictly more privilege for strictly more cost), and it puts the
-   policy read inside the mint, which should stay a pure verifier.
-3. **Bake membership into the identity credential at first `/exchange`** — rejected by the brief's
-   constraint 5 and correctly: the room is unknown at that point, and any baked grant goes stale the
-   moment someone is removed.
-4. **Client asserts its own admission** — trivially forged.
-5. **Keep one enum, just add `private` support** — the simplest alternative, and the one most worth
-   arguing with. Rejected because it leaves *listed + closed* unrepresentable, which is the education
-   tier's actual requirement, and because it keeps discovery and entry fused in a type that already
-   forced the backend to throw rather than lie.
-6. **Re-present the ID token at `/livekit-token` and look up there** — rejected: costs the mint its
-   "accepts only a Realm credential" property, which is the boundary most worth keeping pure.
+1. **Default `admission` for new rooms.** Live code defaults `isPublic: true`; `packages/realm/DESIGN.md:54`
+   specifies `NewRoomSpec` defaulting to **`private`**. A genuine two-source conflict.
+2. **May guests ever enter closed rooms**, or is a closed room members-only by definition?
+3. **Is `listed + closed` a real requirement?** If Nick says yes, v2's split returns and this
+   recast was wrong. All four families bet it is not.
+4. **Automatic eviction on removal, or an owner action?** (§4)
 
-## 9. Claims to falsify (for the temper)
+## 11. Claims to falsify (v3)
 
-- **C1.** LiveKit offers no pre-join admission hook, so the mint is the only door. *Checked against
-  the vendor's webhook list; if wrong, the whole enforcement location is wrong.*
-- **C2.** Firestore REST with a Firebase ID token enforces Security Rules as that user, so no service
-  account is needed. *Checked against Firebase's own docs. Not yet exercised against this project.*
-- **C3. ⚠ WEAKEST STRUCTURAL CLAIM — strike here hardest.** Splitting `RoomVisibility` into two axes
-  is the right primitive and not over-engineering. *Downgraded during Fold after I re-attacked it
-  myself: the listed+closed requirement is my **inference** from `packages/realm/DESIGN.md:170`
-  ("Education tier: private rooms, classroom features"), not a stated need. A classroom could just as
-  well be `unlisted` and shared by link. The split survives on a weaker second argument — it keeps
-  the listing query and the admission predicate independent. **If C3 falls, alternative 5 wins and
-  this design gets meaningfully smaller, which is a good outcome, not a failure.***
-- **C4.** A short TTL on the room-scoped credential adequately bounds revocation staleness. **Unquantified
-  — no TTL is proposed here, and "short" is not a design.** A removed user stays admitted for up to
-  one TTL, and LiveKit sessions outlive the token that opened them, so eviction of an *in-progress*
-  session is out of scope entirely. This is the weakest claim in the document.
-- **C5.** A transferable bearer capability is an acceptable definition of guest admission.
-- **C6.** Steps 2+3 can land before step 1 without becoming a stand-in predicate.
-- **C7.** `room.auto_create` is actually `true` on *this* deployment. *Inferred from the vendor default
-  plus the absence of any override in the repo. The deployment was not inspected — this is the
-  design's least-verified factual premise.*
-
-## 10. Open variables (enumerated, not rounded to "ready")
-
-1. TTL for the room-scoped credential (see C4 — this is a gap, not a detail).
-2. LiveKit Cloud vs self-hosted, and whether `auto_create` is settable there.
-3. **Default `admission` for newly-created rooms.** Live code defaults `isPublic: true` →
-   `open`; `packages/realm/DESIGN.md:54` specifies `NewRoomSpec` defaulting to **`private`**. Those
-   disagree. **Surfacing, not tie-breaking** — this is a two-source conflict and the call is Nick's.
-4. Whether `role` on a member tuple is engine-opaque (proposed) or an engine enum.
-5. Whether an owner is implicitly admitted or must hold a member tuple (proposed: must hold one, so
-   the rule stays uniformly positive — but it makes `createRoom` non-atomic across two writes).
-6. Invite revocation semantics: delete the doc, or mark and sweep?
-7. Per-room throttling for `joinCode` attempts (F4). The existing limiter is per-IP with a
-   service-wide ceiling and was built for a different threat; it does not bound a distributed grind.
-   Codes must be ≥128-bit, server-generated, stored **hashed**, expiring and use-counted — entropy
-   does the real work, the throttle is depth.
-8. Whether any live `tech_world` flow relies on create-by-join, which F3's "missing document =
-   refusal" would close. `room_service.dart` has an explicit `createRoom`, which suggests not —
-   **verify locally in the handoff rather than inferring it from an outside grep.**
-
-## 11. Also folded in from `FOLD.md`
-
-- **F6 — a free lever already in hand.** The credential already carries `prov`, which is `anonymous`
-  for guests (`src/realmCredential.js:35,86`). So "closed rooms never admit anonymous principals" is
-  expressible **today** with no new data model and no lookup. It is coarse — it cannot say "this
-  guest, this room" — so it is not a substitute for the design, but the mechanism should pass `prov`
-  to the predicate so a world can use it. **Not hardcoded**: that would be the engine choosing a
-  social policy, which the framing forbids.
-- **F7 — `createRoom` now writes two documents** (the room, and `members/{ownerId}`). A partial
-  failure leaves a closed room whose owner cannot enter and cannot repair. Single batch/transaction,
-  named in the handoff.
+- **C1.** No LiveKit pre-join hook, so the mint is the only door. *Held under all four strikes.*
+- **C2.** Firestore REST + ID token enforces rules as that user. *Verified in Firebase's docs; not
+  yet exercised against this project, and now qualified by App Check (§7).*
+- **C3 — WITHDRAWN.** The 2×2 split is dead. Its replacement claim: **one `admission` field beside
+  `isPublic` is sufficient**, and the only thing that resurrects the split is open question 3.
+- **C4 — quantified, and its scope corrected.** 120s credential TTL bounds **minting**. It does not
+  bound presence: a LiveKit token's `exp` gates connection, not continued session, so **eviction
+  (§4) is the only presence lever** and v3's `min()` binding was deleted as both ineffective and
+  reconnect-breaking. Residual: a live session survives until evicted.
+- **C5.** A transferable bearer capability is an acceptable definition of guest admission, with
+  use-counting **abandoned** as unimplementable on this path, and single-use `jti` tickets
+  **abandoned** as stateful-for-nothing (§3, §6).
+- **C8 (new, v4).** The mint remains **stateless**. Any future proposal that gives it a store must
+  first answer: what distinguishes a retry from a replay?
+- **C6 — WITHDRAWN.** Steps cannot precede the data. Build order reordered accordingly.
+- **C7 — promoted to a blocking prerequisite (step 1).** No longer an assumption in a build table.
