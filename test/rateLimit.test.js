@@ -5,7 +5,13 @@ import {
   makeRateLimiter,
   resolveTrustProxyHops,
   InvalidTrustProxyHops,
+  RateLimitScope,
 } from '../src/rateLimit.js';
+
+// These tests exercise the counting primitive, not the wiring, so the scope is
+// noise here — but it is REQUIRED at the real call sites on purpose (a limiter
+// with no scope logs a 429 nobody can attribute). One default, stated once.
+const makeLimiter = (opts) => makeRateLimiter({ scope: RateLimitScope.GLOBAL, ...opts });
 
 // A minimal express-shaped res: enough to record what the middleware did, and
 // nothing that would let a passing test depend on express internals.
@@ -33,7 +39,7 @@ function hit(limiter, req = {}) {
 }
 
 test('allows up to the limit, then refuses', () => {
-  const limiter = makeRateLimiter({ limit: 3, windowMs: 60_000, now: () => 1000 });
+  const limiter = makeLimiter({ limit: 3, windowMs: 60_000, now: () => 1000 });
   const req = { ip: '1.2.3.4' };
 
   for (let i = 0; i < 3; i += 1) {
@@ -48,7 +54,7 @@ test('allows up to the limit, then refuses', () => {
 
 test('a refusal carries a Retry-After of at least one second', () => {
   let clock = 0;
-  const limiter = makeRateLimiter({ limit: 1, windowMs: 60_000, now: () => clock });
+  const limiter = makeLimiter({ limit: 1, windowMs: 60_000, now: () => clock });
 
   hit(limiter, { ip: 'a' });
 
@@ -60,7 +66,7 @@ test('a refusal carries a Retry-After of at least one second', () => {
   assert.equal(refused.res.headers['retry-after'], '1');
 
   clock = 0;
-  const fresh = makeRateLimiter({ limit: 1, windowMs: 60_000, now: () => clock });
+  const fresh = makeLimiter({ limit: 1, windowMs: 60_000, now: () => clock });
   fresh({ ip: 'a' }, fakeRes(), () => {});
   clock = 10_000;
   const mid = hit(fresh, { ip: 'a' });
@@ -69,7 +75,7 @@ test('a refusal carries a Retry-After of at least one second', () => {
 
 test('the window resets and the caller is served again', () => {
   let clock = 0;
-  const limiter = makeRateLimiter({ limit: 1, windowMs: 60_000, now: () => clock });
+  const limiter = makeLimiter({ limit: 1, windowMs: 60_000, now: () => clock });
 
   assert.equal(hit(limiter, { ip: 'a' }).passed, true);
   assert.equal(hit(limiter, { ip: 'a' }).passed, false);
@@ -79,7 +85,7 @@ test('the window resets and the caller is served again', () => {
 });
 
 test('keys are independent — one caller cannot spend another caller budget', () => {
-  const limiter = makeRateLimiter({ limit: 1, windowMs: 60_000, now: () => 0 });
+  const limiter = makeLimiter({ limit: 1, windowMs: 60_000, now: () => 0 });
 
   assert.equal(hit(limiter, { ip: 'a' }).passed, true);
   assert.equal(hit(limiter, { ip: 'a' }).passed, false);
@@ -87,7 +93,7 @@ test('keys are independent — one caller cannot spend another caller budget', (
 });
 
 test('a constant key makes one shared bucket — the global limiter shape', () => {
-  const limiter = makeRateLimiter({
+  const limiter = makeLimiter({
     limit: 2,
     windowMs: 60_000,
     key: () => 'global',
@@ -101,7 +107,7 @@ test('a constant key makes one shared bucket — the global limiter shape', () =
 });
 
 test('an unresolvable key is one named bucket, not a bypass', () => {
-  const limiter = makeRateLimiter({ limit: 1, windowMs: 60_000, now: () => 0 });
+  const limiter = makeLimiter({ limit: 1, windowMs: 60_000, now: () => 0 });
 
   assert.equal(hit(limiter, {}).passed, true);
   assert.equal(hit(limiter, {}).passed, false, 'undefined ip must not skip the check');
@@ -109,7 +115,7 @@ test('an unresolvable key is one named bucket, not a bypass', () => {
 });
 
 test('the key table is bounded, and eviction takes the oldest window', () => {
-  const limiter = makeRateLimiter({ limit: 1, windowMs: 60_000, maxKeys: 2, now: () => 0 });
+  const limiter = makeLimiter({ limit: 1, windowMs: 60_000, maxKeys: 2, now: () => 0 });
 
   assert.equal(hit(limiter, { ip: 'a' }).passed, true);
   assert.equal(hit(limiter, { ip: 'b' }).passed, true);
@@ -125,7 +131,7 @@ test('the key table is bounded, and eviction takes the oldest window', () => {
 
 test('eviction discards the least recently SEEN caller, not the least recently busy', () => {
   let clock = 0;
-  const limiter = makeRateLimiter({ limit: 1, windowMs: 60_000, maxKeys: 2, now: () => clock });
+  const limiter = makeLimiter({ limit: 1, windowMs: 60_000, maxKeys: 2, now: () => clock });
 
   hit(limiter, { ip: 'a' });
   hit(limiter, { ip: 'b' });
@@ -145,7 +151,7 @@ test('eviction discards the least recently SEEN caller, not the least recently b
 });
 
 test('a caller churning the table cannot grow memory without bound', () => {
-  const limiter = makeRateLimiter({ limit: 1, windowMs: 60_000, maxKeys: 8, now: () => 0 });
+  const limiter = makeLimiter({ limit: 1, windowMs: 60_000, maxKeys: 8, now: () => 0 });
   for (let i = 0; i < 5000; i += 1) hit(limiter, { ip: `10.0.0.${i}` });
 
   // Nothing in the middleware's contract exposes the table, so this asserts the

@@ -90,6 +90,26 @@ test('a single caller is refused past the per-IP ceiling on /livekit-token', asy
   });
 });
 
+test('a malformed body is counted, not waved through', async () => {
+  // With the JSON parser mounted app-wide ahead of the limiters, a syntactically
+  // invalid body was rejected by the parser before any limiter ran: the request
+  // consumed no budget and could be repeated forever. Parsing after admission
+  // makes garbage cost the same as anything else.
+  await withServer({}, async (base) => {
+    const bad = () => fetch(`${base}/exchange`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{ this is not json',
+    });
+
+    let last;
+    for (let i = 0; i < 30; i += 1) last = await bad();
+    assert.equal(last.status, 400, 'a malformed body is still a 400 while under the ceiling');
+
+    assert.equal((await bad()).status, 429, 'and it must count toward the ceiling');
+  });
+});
+
 test('the two mint routes hold separate per-IP budgets', async () => {
   await withServer({}, async (base) => {
     for (let i = 0; i < 31; i += 1) await post(base, '/exchange');

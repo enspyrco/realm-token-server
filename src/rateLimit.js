@@ -18,6 +18,21 @@
 // the global layer exists and why it is keyed on nothing. This is not a defence
 // against a distributed attack, and no number in this file makes it one.
 
+/**
+ * The closed set of ceilings this service has. The `scope` a limiter reports is
+ * drawn from here rather than written inline at each call site: it is read back
+ * out of the logs as a diagnostic, and a diagnostic that can silently disagree
+ * with itself over a typo is worse than no diagnostic — an operator would filter
+ * on `mint-per-ip` and find nothing while the mint was being hammered.
+ */
+export const RateLimitScope = Object.freeze({
+  GLOBAL: 'global',
+  EXCHANGE_PER_IP: 'exchange-per-ip',
+  MINT_PER_IP: 'mint-per-ip',
+});
+
+const KNOWN_SCOPES = new Set(Object.values(RateLimitScope));
+
 // Fixed window rather than a token bucket: one integer and one timestamp per
 // key, no refill arithmetic, and the reset instant is a number we can hand the
 // caller in `Retry-After`. The cost is a burst of up to 2*limit across a window
@@ -49,7 +64,7 @@ export function makeRateLimiter({
   // — and both otherwise land in the log as an indistinguishable status 429.
   // Never sent to the caller: telling an attacker they reached the global
   // ceiling confirms the service-wide effect they were testing for.
-  scope = 'unnamed',
+  scope,
 } = {}) {
   if (!Number.isInteger(limit) || limit < 1) {
     throw new TypeError('makeRateLimiter: limit must be a positive integer');
@@ -64,6 +79,14 @@ export function makeRateLimiter({
   // limiter, which is the failure class this module exists to close.
   if (!Number.isInteger(maxKeys) || maxKeys < 1) {
     throw new TypeError('makeRateLimiter: maxKeys must be a positive integer');
+  }
+  // A closed set, checked at the door like every other argument here. The old
+  // default of 'unnamed' meant a forgotten scope produced a log line that parsed
+  // fine and told an operator nothing.
+  if (!KNOWN_SCOPES.has(scope)) {
+    throw new TypeError(
+      `makeRateLimiter: scope must be one of ${[...KNOWN_SCOPES].join(', ')} (see RateLimitScope)`,
+    );
   }
 
   // Insertion-ordered by construction (JS Map), which is what makes the eviction

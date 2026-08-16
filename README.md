@@ -157,13 +157,12 @@ Per-IP runs first, so one abusive source is refused out of its own bucket
 without first spending the budget everyone shares. `/healthz` and unknown paths
 are never throttled — the healthcheck must not be able to 429 itself into a
 restart loop — and preflights never reach the limiter, because CORS answers them
-upstream. A refusal is `429` with `Retry-After`.
+upstream. A refusal is `429` with `Retry-After`. The JSON body parser is mounted
+per route *after* the limiters, so a refused request never pays for its parse and
+a malformed body still consumes budget rather than escaping the count.
 
-Note what "unthrottled" covers and what it does not: the limiters are per-route
-and `express.json` is app-wide ahead of them, so a refused POST has already paid
-for its (16kb-capped) body parse. What the ceilings protect is the *handler*
-work — the `verifyIdToken` round trip and the dispatch-carrying mint — not every
-byte of request handling.
+Read the global number precisely: 600/min is 600 requests that got *past* the
+per-IP layer, not 600 POST attempts — a caller refused per-IP never reaches it.
 
 **The 403 on a disallowed origin is not a throttle.** Anything outside a browser
 omits `Origin` and is served normally, by design. Origin is a browser-honesty
@@ -184,8 +183,24 @@ covers. It detects hops-too-**low** (an all-`false` log means either the limiter
 is mis-keyed *or* nothing reached the service through Caddy — both worth looking
 at). It is **deaf to hops-too-high**: a caller trusted as a hop writes its own
 `X-Forwarded-For`, `proxied` stays `true`, and the log looks healthy while the
-per-IP layer has dissolved. That direction is closed by the cap and by the
-container binding to `127.0.0.1` only, not by this field. A `429` also records which ceiling refused it
+per-IP layer has dissolved. That direction is not closed by this field, and it is
+closed only *partially* elsewhere — state the boundary exactly:
+
+- **From the internet: closed.** The process listens on all interfaces, but
+  `docker-compose.yml` publishes it as `127.0.0.1:8791:8080`, so the only route
+  in from outside the box is through Caddy — which is the one hop `trust proxy`
+  is set for. The cap of 1 keeps it that way.
+- **From inside the box: open, and accepted.** Anything that can already reach
+  the container's `:8080` directly — a sibling service on the docker network, a
+  process on the host — is trusted as the proxy and may name its own client
+  address, dissolving the per-IP layer for itself. The service-wide ceiling still
+  holds. This is accepted rather than solved: a caller with that position already
+  shares a host with the ES256 signing key. Narrowing `trust proxy` from a hop
+  count to the gateway address would close it (claude-tasks#3190).
+
+Raising the cap is a code change, not a config change, and that is on purpose:
+adding a second proxy alters who is allowed to name the client, which is not a
+decision an env var should be able to make on its own. A `429` also records which ceiling refused it
 (`rateLimited`), because a per-IP refusal and a service-wide one are opposite
 events wearing the same status code.
 

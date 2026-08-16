@@ -116,7 +116,11 @@ check 'the per-IP ceiling refuses the next request' 429 "$(post_exchange)"
 # report green with the mint route wide open.
 check 'the mint route still has its own budget' 401 \
   "$(status -X POST "$BASE/livekit-token" -H 'content-type: application/json' -d '{"roomName":"r"}')"
-for _ in $(seq 1 30); do
+# 29, not 30: the check above already spent one, so this takes the window to
+# exactly the ceiling and the assertion below is the FIRST refusal rather than
+# some request after it. A probe that lands past the boundary still goes red when
+# the limiter is missing, but it no longer measures where the boundary is.
+for _ in $(seq 1 29); do
   curl -s -o /dev/null -X POST "$BASE/livekit-token" -H 'content-type: application/json' -d '{"roomName":"r"}'
 done
 check 'the mint route enforces its own ceiling' 429 \

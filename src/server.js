@@ -3,7 +3,7 @@ import { makeExchangeHandler } from './exchange.js';
 import { makeMintHandler } from './mint.js';
 import { makeCorsMiddleware } from './cors.js';
 import { makeRequestLogger } from './requestLog.js';
-import { makeRateLimiter } from './rateLimit.js';
+import { makeRateLimiter, RateLimitScope } from './rateLimit.js';
 
 const MINUTE_MS = 60_000;
 
@@ -87,12 +87,14 @@ export function createApp({
   // Before the body parser so a preflight never pays for JSON parsing it has no
   // body for.
   app.use(makeCorsMiddleware({ allowedOrigins, allowLocalhost }));
-  // Note the ordering cost, since it is a deliberate choice and not an oversight:
-  // this runs app-wide, so a request the per-route limiters below will refuse
-  // has already paid for its body parse. That parse is bounded at 16kb and is
-  // not the expense worth rationing — verifyIdToken's network round trip and the
-  // dispatch-carrying mint are, and both sit behind the limiters.
-  app.use(express.json({ limit: '16kb' }));
+
+  // Mounted PER ROUTE, after the limiters, not app-wide before them. App-wide it
+  // sat ahead of every limiter, which had two consequences: a request destined
+  // for a 429 still paid for its body parse, and — worse — a POST with a
+  // malformed body was rejected by the parser before any limiter ran, so it
+  // consumed no budget and could be repeated without limit. Both disappear when
+  // the parse happens after admission rather than before it.
+  const parseBody = express.json({ limit: '16kb' });
 
   // Mounted per-route rather than app-wide, so /healthz and any unknown path
   // stay unthrottled by construction: the healthcheck must never be able to
@@ -108,7 +110,7 @@ export function createApp({
     limit: GLOBAL_PER_MINUTE,
     windowMs: MINUTE_MS,
     key: () => 'global',
-    scope: 'global',
+    scope: RateLimitScope.GLOBAL,
     // One key, so the table cannot grow and eviction can never discard it.
     maxKeys: 1,
     now,
@@ -116,13 +118,13 @@ export function createApp({
   const exchangeLimit = makeRateLimiter({
     limit: EXCHANGE_PER_IP_PER_MINUTE,
     windowMs: MINUTE_MS,
-    scope: 'exchange-per-ip',
+    scope: RateLimitScope.EXCHANGE_PER_IP,
     now,
   });
   const mintLimit = makeRateLimiter({
     limit: MINT_PER_IP_PER_MINUTE,
     windowMs: MINUTE_MS,
-    scope: 'mint-per-ip',
+    scope: RateLimitScope.MINT_PER_IP,
     now,
   });
 
@@ -131,12 +133,14 @@ export function createApp({
     '/exchange',
     exchangeLimit,
     globalLimit,
+    parseBody,
     makeExchangeHandler({ verifyProviderIdToken, privateKeyPem, ttlSeconds }),
   );
   app.post(
     '/livekit-token',
     mintLimit,
     globalLimit,
+    parseBody,
     makeMintHandler({ publicKeyPem, mintLiveKitToken }),
   );
 
