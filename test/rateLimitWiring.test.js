@@ -90,6 +90,34 @@ test('a single caller is refused past the per-IP ceiling on /livekit-token', asy
   });
 });
 
+test('a forged X-Forwarded-For prefix cannot steal a fresh budget', async () => {
+  // The precise deployed attack. Caddy does not REPLACE X-Forwarded-For, it
+  // APPENDS the peer it is talking to — so an internet caller who sends
+  // `X-Forwarded-For: 1.2.3.4` produces `1.2.3.4, <their real address>` at this
+  // process. Express counts trusted hops from the socket end, so at hops=1 it
+  // takes the LAST entry (the one Caddy wrote) and the forged prefix is inert.
+  //
+  // Two things make this worth a test rather than a comment: the correctness
+  // depends on Caddy's append semantics and Express's right-to-left count
+  // agreeing, and if they ever stop agreeing the limiter does not break loudly —
+  // it silently gives every caller a fresh bucket per request.
+  await withServer({ trustProxyHops: 1 }, async (base) => {
+    // One real client, a different forged prefix every time.
+    let last;
+    for (let i = 0; i < 31; i += 1) {
+      last = await post(base, '/exchange', { forwardedFor: `10.0.0.${i}, 203.0.113.5` });
+    }
+    assert.equal(last.status, 429, 'rotating the forged prefix must not mint new budgets');
+
+    // And the real client is the one being counted, not the forged prefix: a
+    // different real client with an already-seen prefix is served.
+    assert.equal(
+      (await post(base, '/exchange', { forwardedFor: '10.0.0.1, 198.51.100.20' })).status,
+      401,
+    );
+  });
+});
+
 test('a malformed body is counted, not waved through', async () => {
   // With the JSON parser mounted app-wide ahead of the limiters, a syntactically
   // invalid body was rejected by the parser before any limiter ran: the request
