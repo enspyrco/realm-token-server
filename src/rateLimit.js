@@ -33,6 +33,11 @@ export const RateLimitScope = Object.freeze({
 
 const KNOWN_SCOPES = new Set(Object.values(RateLimitScope));
 
+// Longer than any address express can hand back (an IPv6 literal with a zone id
+// tops out well under this), short enough that maxKeys entries is a memory
+// budget rather than a header-sized surprise.
+const MAX_KEY_LENGTH = 64;
+
 // Fixed window rather than a token bucket: one integer and one timestamp per
 // key, no refill arithmetic, and the reset instant is a number we can hand the
 // caller in `Retry-After`. The cost is a burst of up to 2*limit across a window
@@ -100,7 +105,14 @@ export function makeRateLimiter({
     // every other such request under one name instead of skipping the check —
     // `undefined` as a Map key would otherwise be a single shared bucket by
     // accident, and this way it is one by decision.
-    const id = k === undefined || k === null ? 'unknown' : String(k);
+    // Truncated, because the table is bounded in ENTRIES and the key is not
+    // always an address we chose. On the accepted inside-the-box path a caller
+    // supplies its own X-Forwarded-For, and express hands back whatever it finds
+    // there — so maxKeys entries of header-sized junk is a much larger number
+    // than maxKeys entries of "203.0.113.7". No real address is close to this
+    // long, so truncation costs nothing and turns an entry bound into a byte
+    // bound.
+    const id = k === undefined || k === null ? 'unknown' : String(k).slice(0, MAX_KEY_LENGTH);
 
     const t = now();
     let entry = windows.get(id);

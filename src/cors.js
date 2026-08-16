@@ -73,6 +73,16 @@ export function makeCorsMiddleware({ allowedOrigins = [], allowLocalhost = false
       res.setHeader('Access-Control-Allow-Origin', origin);
       res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
       res.setHeader('Access-Control-Allow-Headers', 'content-type, authorization');
+      // Response headers are not readable from browser JS unless exposed: the
+      // CORS-safelisted set is Cache-Control, Content-Language, Content-Length,
+      // Content-Type, Expires, Last-Modified, Pragma — and nothing else. Without
+      // this, a rate-limited web client can see the 429 but not the number that
+      // tells it how long to wait, so it either retries immediately (the exact
+      // behaviour being limited) or invents a backoff. Note that no test using
+      // Node's fetch can catch this: fetch outside a browser does not enforce
+      // CORS, so the header reads fine there and is invisible in the one place
+      // it matters.
+      res.setHeader('Access-Control-Expose-Headers', 'Retry-After');
       // Short, but do not treat 600 as a revocation budget: Chromium and Firefox
       // decline to cache a preflight served with `no-store` (which this service
       // sets on every response), so Max-Age is largely inert there, while Safari

@@ -161,8 +161,18 @@ upstream. A refusal is `429` with `Retry-After`. The JSON body parser is mounted
 per route *after* the limiters, so a refused request never pays for its parse and
 a malformed body still consumes budget rather than escaping the count.
 
-Read the global number precisely: 600/min is 600 requests that got *past* the
-per-IP layer, not 600 POST attempts — a caller refused per-IP never reaches it.
+Read the numbers precisely, in two ways. **What is counted:** 600/min is 600
+requests that got *past* the per-IP layer, not 600 POST attempts — a caller
+refused per-IP never reaches it. **How it is counted:** these are fixed windows,
+not rolling ones, so the honest ceiling is *N per window* and a caller timing the
+boundary can land up to 2N in a short interval spanning two windows. At these
+values that burst is irrelevant, which is why a fixed window was chosen over a
+token bucket — but "600/min" is the window, not a rolling-minute guarantee.
+
+`Retry-After` is exposed via `Access-Control-Expose-Headers`, without which
+browser JS can see the 429 but not the backoff — and would retry immediately,
+which is the behaviour being limited. Note this is unobservable from any test
+using Node's `fetch`, which does not enforce CORS.
 
 **The 403 on a disallowed origin is not a throttle.** Anything outside a browser
 omits `Origin` and is served normally, by design. Origin is a browser-honesty

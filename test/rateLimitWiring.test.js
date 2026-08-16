@@ -216,6 +216,18 @@ test('a 429 is readable by the browser it was sent to', async () => {
     // can back off from and an outage it cannot explain.
     assert.equal(res.headers.get('access-control-allow-origin'), origin);
     assert.ok(res.headers.get('retry-after'));
+    // Present on the wire is not the same as readable in the page. Only the
+    // CORS-safelisted response headers are exposed to browser JS by default, and
+    // Retry-After is not among them — so without this the client sees a 429 it
+    // cannot get a backoff out of, and retries immediately. This assertion is
+    // deliberately about the HEADER rather than the behaviour, because no test
+    // using Node's fetch can observe the behaviour: fetch outside a browser does
+    // not enforce CORS at all.
+    assert.match(
+      res.headers.get('access-control-expose-headers') ?? '',
+      /retry-after/i,
+      'Retry-After must be exposed or the browser cannot read it',
+    );
   });
 });
 

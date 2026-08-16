@@ -160,6 +160,18 @@ test('a caller churning the table cannot grow memory without bound', () => {
   assert.equal(hit(limiter, { ip: '10.0.0.0' }).passed, true);
 });
 
+test('an oversized key is truncated, so the table is bounded in bytes too', () => {
+  const limiter = makeLimiter({ limit: 1, windowMs: 60_000, now: () => 0 });
+
+  // Two keys that differ only past the truncation point must land in ONE bucket.
+  // Otherwise a caller able to influence its own key (the accepted inside-the-box
+  // path) gets both a fresh allowance per request AND maxKeys entries of
+  // header-sized junk instead of maxKeys entries of an address.
+  const long = 'x'.repeat(4096);
+  assert.equal(hit(limiter, { ip: `${long}A` }).passed, true);
+  assert.equal(hit(limiter, { ip: `${long}B` }).passed, false, 'differing only past the cap is the same caller');
+});
+
 test('a nonsense limit is refused at construction, not at 3am', () => {
   assert.throws(() => makeRateLimiter({ limit: 0, windowMs: 1000 }), TypeError);
   assert.throws(() => makeRateLimiter({ limit: 1.5, windowMs: 1000 }), TypeError);
