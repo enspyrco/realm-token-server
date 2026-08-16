@@ -267,15 +267,23 @@ artifact.
 
 ### Promote — deploy that version
 
+Bump the tag **here**, commit it, then copy that file to the box. Never edit the
+box's copy in place — doing so is what left the repo saying 0.1.0 while the box
+ran 0.2.0, until the next deploy copied the stale repo pin back over the correct
+one (fixed in b5ccbbd; these steps are the other half of that fix).
+
 ```bash
-ssh <box>
-cd ~/apps/realm-token-server
-$EDITOR docker-compose.yml          # bump the image tag
-docker compose pull && docker compose up -d
-docker compose ps                   # wait for healthy (healthcheck hits /healthz)
+# in the repo, after the image for this version has published
+scp docker-compose.yml <box>:~/apps/realm-token-server/docker-compose.yml
+ssh <box> 'cd ~/apps/realm-token-server && docker compose pull && docker compose up -d && docker compose ps'
+# wait for healthy (the healthcheck hits /healthz)
 ```
 
-Rollback is the same three commands with the previous tag — the old image is
+If the version being promoted introduces a **required** env var, add it to the
+box's `.env` *before* the pull — the container refuses to boot without it and
+will restart-loop until the variable exists.
+
+Rollback is the same two commands with the previous tag committed here — the old image is
 still in the registry and still immutable.
 
 Deliberately a human step. This service mints credentials, so an auth boundary
