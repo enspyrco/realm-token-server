@@ -149,10 +149,25 @@ a different edge. Two further gaps this design does not close:
 One new field beside the existing `isPublic`, and two subcollections. No enum rename, no breaking
 public-type change.
 
+**Nick's ruling, 2026-08-17 — the engine holds no default, and admission is one field in a
+per-room permissions object.** Asked which side of the `open`-vs-`private` default conflict wins,
+he chose *neither*: `NewRoomSpec` **requires** the caller to state it, and the engine has no
+opinion. Asked whether guests may enter closed rooms, he answered *"different kinds of rooms — have
+a permissions setting"* — so guest-admissibility is **not** an engine-wide rule and **not** a
+boolean I get to invent, it is a field worlds set per room. A world defines its room *kinds* by
+choosing presets of that object.
+
+This is more mechanism-not-policy than v4 was, and it deletes open questions 1 and 2 rather than
+answering them.
+
 ```
 rooms/{roomId}
   isPublic: bool                    // UNCHANGED — listing. Already shipped, already queried.
-  admission: "open" | "closed"      // NEW — entry. Absent is a migration bug, not a default.
+  permissions: {                    // NEW — entry. REQUIRED at create; the engine has no default.
+    admission:        "open" | "closed",
+    allowAnonymous:   bool,         // may a guest principal (prov == "anonymous") be admitted at all
+    defaultCanPublish: bool,        // §5 — applies to open-room joiners and guests
+  }
 
 rooms/{roomId}/members/{uid}        // identity-based admission
   role: <world-defined string>      // engine does not interpret; worlds do
@@ -298,6 +313,13 @@ question 2 before Nick answers it.
 So step 0 is a **deployment-wide switch**, off by default: this deployment either accepts anonymous
 principals or it does not. No per-room read, no listing axis, no policy baked into a room.
 
+**Step 0 is explicitly temporary, and superseded by design.** Once step 2 lands,
+`permissions.allowAnonymous` decides this per room, which is strictly better — Nick's ruling made
+guest-admissibility a room setting, not a deployment one. Step 0 exists only because it closes the
+worst sentence in `claude-tasks#2850` *today*, with no data model, no lookup and no new secret, and
+because it is off by default and reversible by an env var. It is scaffolding with a scheduled
+demolition date, not a first draft of the real thing.
+
 And it is **a risk trim, not admission control** — Carnot's framing, and the honest one. It closes
 the worst sentence in `claude-tasks#2850` ("including an anonymous guest") for a deployment willing
 to require sign-in. Any authenticated user can still request any room. It is worth shipping because
@@ -318,14 +340,19 @@ exchange-flow change, request-log redaction (`joinCode` must never be logged —
 flow, LiveKit infra config, tests that mutate the historical bug, and support docs explaining why
 old identity credentials stop working at step 6.
 
-## 10. Open — Nick's calls, surfaced not tie-broken
+## 10. Nick's rulings (2026-08-17) — answered, not open
 
-1. **Default `admission` for new rooms.** Live code defaults `isPublic: true`; `packages/realm/DESIGN.md:54`
-   specifies `NewRoomSpec` defaulting to **`private`**. A genuine two-source conflict.
-2. **May guests ever enter closed rooms**, or is a closed room members-only by definition?
-3. **Is `listed + closed` a real requirement?** If Nick says yes, v2's split returns and this
-   recast was wrong. All four families bet it is not.
-4. **Automatic eviction on removal, or an owner action?** (§4)
+1. **Default `admission` for new rooms — RESOLVED: neither side of the conflict wins.** The engine
+   ships no default; `NewRoomSpec` requires the caller to state it. Accepted cost: a breaking API
+   change every consumer meets immediately. `tech_world` is the only consumer today.
+2. **May guests enter closed rooms — RESOLVED as the wrong question.** *"Different kinds of rooms —
+   have a permissions setting."* Guest-admissibility is `permissions.allowAnonymous`, set per room
+   by the world. Not an engine rule.
+3. **Is `listed + closed` real — RESOLVED: no.** The four families' bet was right. C3 stays
+   withdrawn and the two-axis split stays dead. The additive `permissions` object does not block
+   adding it later if a real requirement ever appears.
+4. **Automatic eviction vs owner action — STILL OPEN**, and correctly so: §4 scopes eviction as its
+   own design pass, so this is a question for that pass rather than this one.
 
 ## 11. Claims to falsify (v3)
 

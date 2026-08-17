@@ -45,6 +45,11 @@ export function createApp({
   // from the environment via resolveTrustProxyHops, which refuses to guess in
   // production. See rateLimit.js for why both wrong values fail silently.
   trustProxyHops = 0,
+  // Deployment-wide refusal of anonymous principals at the mint. Defaults OFF so
+  // this is behaviour-identical until a deployment opts in. index.js resolves it
+  // from the environment via resolveRefuseAnonymous, which refuses to boot on an
+  // unrecognised value rather than reading it as off.
+  refuseAnonymous = false,
   // Left undefined so rateLimit.js's monotonic default applies; tests inject a
   // frozen clock so no assertion can straddle a window boundary.
   now,
@@ -141,7 +146,7 @@ export function createApp({
     mintLimit,
     globalLimit,
     parseBody,
-    makeMintHandler({ publicKeyPem, mintLiveKitToken }),
+    makeMintHandler({ publicKeyPem, mintLiveKitToken, refuseAnonymous }),
   );
 
   return app;

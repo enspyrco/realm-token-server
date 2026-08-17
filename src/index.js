@@ -3,6 +3,7 @@ import { verifyFirebaseIdToken } from './firebase.js';
 import { makeLiveKitMinter } from './livekit.js';
 import { corsConfigFromEnv } from './cors.js';
 import { resolveTrustProxyHops } from './rateLimit.js';
+import { resolveRefuseAnonymous } from './mint.js';
 
 function requireEnv(name) {
   const v = process.env[name];
@@ -25,6 +26,7 @@ const app = createApp({
   }),
   ttlSeconds: Number(process.env.REALM_CREDENTIAL_TTL_SECONDS || 3600),
   trustProxyHops: resolveTrustProxyHops(process.env),
+  refuseAnonymous: resolveRefuseAnonymous(process.env),
   ...corsConfigFromEnv(process.env),
 });
 

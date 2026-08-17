@@ -44,6 +44,32 @@ mint a token for any `roomName`. Private rooms need an admission predicate the
 Realm data model does not yet have (rooms carry `editorIds`/`canEdit`, which is
 edit rights, not a join roster). Tracked in `nickmeinhold/claude-tasks#2850`.
 
+The design for closing it is in
+[`docs/crucible/room-admission/`](docs/crucible/room-admission/) — tempered
+across two four-way cross-family strikes (`TEMPER.md`). Enforcement has to live
+here, at the mint: LiveKit has **no pre-join admission hook** (webhooks fire
+after the media connection is established), so the access token *is* the
+admission decision.
+
+### `REALM_REFUSE_ANONYMOUS` — a risk trim, not the fix
+
+Step 0 of that design, and the only part of it that exists today. Set it to
+`true` and `/livekit-token` refuses any credential whose `prov` is `anonymous`
+with a **403**. Unset (the default) is off and behaviour-identical; any value
+other than exactly `true`/`false` makes the service **refuse to start** rather
+than be silently read as off.
+
+Be precise about what this does and does not do:
+
+- **Does:** removes the throwaway-uid caller. A fresh anonymous Firebase uid can
+  no longer walk into rooms by typing a name.
+- **Does not:** stop *any signed-in user* from requesting *any* room. That is
+  the actual bug, and it is closed by the engine-side admission predicate
+  (step 2), not here.
+
+It is also deliberately temporary: once the engine ships per-room
+`permissions.allowAnonymous`, that supersedes this deployment-wide switch.
+
 ## CORS
 
 The deployed client is Flutter **web**, so both endpoints are cross-origin and
@@ -224,7 +250,8 @@ distributed attack.
 
 It is also **not** authorization. `/livekit-token` still mints a token for any
 `roomName` to any holder of a valid credential; admission control does not exist
-yet (claude-tasks#2850).
+yet (claude-tasks#2850). `REALM_REFUSE_ANONYMOUS` narrows *who holds a
+credential*, not *which rooms they may name*.
 
 ## Contract parity
 
