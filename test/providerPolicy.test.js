@@ -7,11 +7,16 @@ import { appOptionsFromEnv } from '../src/config.js';
 import { SIGNED_IN_PROVIDERS, isSignedInProvider } from '../src/providers.js';
 import { es256Keys } from './helpers.js';
 
-// Step 0 of docs/crucible/room-admission/DESIGN.md — the deployment-wide refusal
-// of anonymous principals at the mint. This is a RISK TRIM, not admission control:
-// it closes "any anonymous guest can enter any room" for a deployment willing to
-// require sign-in. An authenticated user can still request any room; that is the
-// engine's job (step 2) and these tests deliberately do not claim otherwise.
+// Step 0 of docs/crucible/room-admission/DESIGN.md — the deployment-wide
+// requirement that a principal's `prov` be a KNOWN sign-in provider. An ALLOWLIST:
+// it refuses anonymous guests and equally refuses phone auth, custom tokens and
+// anything else outside SIGNED_IN_PROVIDERS. Calling it "refuse anonymous" is the
+// denylist utterance this PR has had to un-restore once already.
+//
+// It is a RISK TRIM, not admission control: it closes "any anonymous guest can
+// enter any room" for a deployment willing to require sign-in. An authenticated
+// user can still request any room; that is the engine's job (step 2) and these
+// tests deliberately do not claim otherwise.
 
 const keys = es256Keys();
 

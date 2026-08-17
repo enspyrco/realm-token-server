@@ -10,6 +10,21 @@ import { isSignedInProvider } from './providers.js';
  * contract as resolveTrustProxyHops: refuse to boot rather than run mis-set.
  */
 export function resolveRequireKnownProvider(env) {
+  // The pre-rename name is REFUSED, not ignored. Setting a security switch that
+  // nothing reads fails in the one direction that matters: the operator believes
+  // the box is configured, the switch stays off, and nothing says otherwise.
+  // Every stale runbook, ticket and PR description that still names the old
+  // variable now produces a loud boot failure instead of silent permissiveness.
+  // (Carnot and Tesla, independently, on PR #6 round 9 — the PR body itself still
+  // advertised the old name after the rename landed.)
+  if (env.REALM_REFUSE_ANONYMOUS !== undefined) {
+    throw new Error(
+      'REALM_REFUSE_ANONYMOUS was renamed to REALM_REQUIRE_KNOWN_PROVIDER '
+      + '(it gates on an allowlist of known sign-in providers, not on the anonymous '
+      + 'sentinel). Refusing to start rather than silently ignoring it.',
+    );
+  }
+
   const raw = env.REALM_REQUIRE_KNOWN_PROVIDER;
   if (raw === undefined) return false;
   if (raw === 'true') return true;

@@ -92,8 +92,16 @@ Be precise about what this does and does not do:
   the actual bug, and it is closed by the engine-side admission predicate
   (step 2), not here.
 
-It is also deliberately temporary: once the engine ships per-room
-`permissions.allowAnonymous`, that supersedes this deployment-wide switch.
+It is also deliberately temporary — but **the two are not the same axis**, and
+whoever retires this switch must not assume they are. This one asks *"is this
+principal's sign-in method one we recognise?"* (a deployment-wide allowlist of
+providers). The engine's `permissions.allowAnonymous` asks *"may a guest enter
+**this room**?"* (a per-room policy). They share a mood, not a question.
+
+Retiring this switch therefore means **deleting** it once per-room admission is
+enforced — not reimplementing it as `prov !== "anonymous"` somewhere else. That
+rewrite would readmit the `"firebase"` don't-know fallback and restore the exact
+fail-open two reviewers independently found on this PR.
 
 ## CORS
 

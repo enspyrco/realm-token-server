@@ -45,7 +45,11 @@ export function createApp({
   // from the environment via resolveTrustProxyHops, which refuses to guess in
   // production. See rateLimit.js for why both wrong values fail silently.
   trustProxyHops = 0,
-  // Deployment-wide refusal of anonymous principals at the mint. Defaults OFF so
+  // Deployment-wide requirement that a principal's `prov` be a KNOWN sign-in
+  // provider (isSignedInProvider / SIGNED_IN_PROVIDERS) — an allowlist. It refuses
+  // anonymous guests, and equally refuses phone auth, custom tokens and anything
+  // else not in that set. Describing it as "refuse anonymous" is the denylist
+  // utterance that this PR has already had to un-restore once. Defaults OFF so
   // this is behaviour-identical until a deployment opts in. index.js resolves it
   // from the environment via resolveRequireKnownProvider, which refuses to boot on an
   // unrecognised value rather than reading it as off.

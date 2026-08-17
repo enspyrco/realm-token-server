@@ -95,3 +95,38 @@ test('an UNKNOWN sign_in_provider is NOT proof of signing in', () => {
   assert.equal(mapProvider(undefined), 'firebase');
   assert.ok(!isSignedInProvider('firebase'), "'firebase' means 'we don't know', not 'signed in'");
 });
+
+// ---------------------------------------------------------------------------
+// The pre-rename name must be REFUSED, never ignored.
+// ---------------------------------------------------------------------------
+
+test('the OLD switch name refuses to boot rather than being silently ignored', () => {
+  // Carnot and Tesla, independently, PR #6 round 9. After the rename, an operator
+  // following a stale runbook (or this PR's own description, which still said the
+  // old name) would set REALM_REFUSE_ANONYMOUS=true, resolve...() would see
+  // undefined, return false, and anonymous credentials would keep minting. The box
+  // looks configured; the switch is off; nothing says so. Silence in the one
+  // direction that matters.
+  assert.throws(
+    () => appOptionsFromEnv(envWith({ REALM_REFUSE_ANONYMOUS: 'true' })),
+    /REALM_REFUSE_ANONYMOUS was renamed/,
+  );
+  // Even set to "false", because the point is that the operator believes this
+  // variable controls something.
+  assert.throws(
+    () => appOptionsFromEnv(envWith({ REALM_REFUSE_ANONYMOUS: 'false' })),
+    /REALM_REQUIRE_KNOWN_PROVIDER/,
+  );
+});
+
+test('the old name is refused even when the NEW one is also set', () => {
+  // Two switches for one knob is exactly the ambiguity that should never resolve
+  // silently — whichever way it resolved, half the operators would be wrong.
+  assert.throws(
+    () => appOptionsFromEnv(envWith({
+      REALM_REFUSE_ANONYMOUS: 'false',
+      REALM_REQUIRE_KNOWN_PROVIDER: 'true',
+    })),
+    /renamed/,
+  );
+});
