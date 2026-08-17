@@ -26,16 +26,31 @@ async function fakeVerify(idToken) {
   if (idToken === 'unknown') return { uid: 'user-9', provider: 'firebase' };
   throw new Error('bad token');
 }
-// Records every invocation. A refused request must never reach the minter at all:
-// mintLiveKitToken embeds RoomAgentDispatch (src/livekit.js:22-24), so minting for a
-// principal we then refuse would dispatch three agents into the room on every 403.
-// Asserting only the status code would let a reorder (mint, then refuse) stay green
-// while doing exactly that. Raised by Tesla on PR #6.
-const mintCalls = [];
-async function fakeMint({ identity, roomName }) {
-  mintCalls.push({ identity, roomName });
-  return `lk-token:${identity}:${roomName}`;
+// A refused request must never reach the minter at all: mintLiveKitToken embeds
+// RoomAgentDispatch (src/livekit.js:22-24), so minting for a principal we then
+// refuse would dispatch three agents into the room on every 403. Asserting only
+// the status code would let a reorder (mint, then refuse) stay green while doing
+// exactly that. Raised by Tesla on PR #6.
+//
+// Each recorder is its OWN array, handed to its OWN server. An earlier version
+// used one module-level `mintCalls` shared by four servers and every test, reset
+// with `mintCalls.length = 0` — a single mutable slot used as a global "current"
+// witness. Node's runner is free to interleave, so another test's reset could land
+// between this test's request and its assertion, and the side-effect proof would
+// certify the very regression it exists to catch (Tesla, round 5). The witness is
+// now bound to the server it witnesses, not to a shared bowl.
+function makeRecorder() {
+  const calls = [];
+  return {
+    calls,
+    mint: async ({ identity, roomName }) => {
+      calls.push({ identity, roomName });
+      return `lk-token:${identity}:${roomName}`;
+    },
+  };
 }
+const sharedRecorder = makeRecorder();
+const fakeMint = sharedRecorder.mint;
 
 function makeServer(opts) {
   const app = createApp({
@@ -52,6 +67,29 @@ function makeServer(opts) {
       resolve({ server, base });
     });
   });
+}
+
+// A server with its own minter recorder, torn down by the caller. Used by every
+// test that asserts the minter was NOT invoked, so no other test can touch the
+// witness (see makeRecorder above).
+async function isolated(opts, fn) {
+  const rec = makeRecorder();
+  const app = createApp({
+    verifyProviderIdToken: fakeVerify,
+    privateKeyPem: keys.privateKeyPem,
+    publicKeyPem: keys.publicKeyPem,
+    mintLiveKitToken: rec.mint,
+    allowedOrigins: [],
+    ...opts,
+  });
+  const { server, base } = await new Promise((resolve) => {
+    const s = app.listen(0, () => resolve({ server: s, base: `http://localhost:${s.address().port}` }));
+  });
+  try {
+    return await fn(base, rec.calls);
+  } finally {
+    await new Promise((r) => server.close(r));
+  }
 }
 
 function post(base, path, { body, headers } = {}) {
@@ -91,16 +129,18 @@ after(() => Promise.all([enforcing, permissive, omitted, fromEnv].map(
 // ---------------------------------------------------------------------------
 
 test('enforcing: an anonymous principal is refused at the mint → 403, and NO token is minted', async () => {
-  const token = await credentialFor(enforcing.base, 'anon');
-  mintCalls.length = 0;
-  const res = await post(enforcing.base, '/livekit-token', {
-    body: { roomName: 'any_room' },
-    headers: { authorization: `Bearer ${token}` },
+  const { res, calls } = await isolated({ refuseAnonymous: true }, async (base, calls) => {
+    const token = await credentialFor(base, 'anon');
+    const res = await post(base, '/livekit-token', {
+      body: { roomName: 'any_room' },
+      headers: { authorization: `Bearer ${token}` },
+    });
+    return { res, calls };
   });
   assert.equal(res.status, 403);
   // The side effect, not just the status. A reorder that minted first and refused
   // after would still return 403 while dispatching agents for every rejected guest.
-  assert.deepEqual(mintCalls, [], 'the LiveKit minter must not run for a refused principal');
+  assert.deepEqual(calls, [], 'the LiveKit minter must not run for a refused principal');
   // 403 not 401: the credential is VALID and was verified. This is an
   // authorization refusal, and conflating it with 401 would tell a caller to
   // go re-authenticate, which would not help.
@@ -121,14 +161,15 @@ test("enforcing: an UNKNOWN provider ('firebase') is refused → 403", async () 
   //
   // Delete SIGNED_IN_PROVIDERS and fall back to a not-the-sentinel check, and this
   // test goes red. That is the point of it.
-  const token = await credentialFor(enforcing.base, 'unknown');
-  mintCalls.length = 0;
-  const res = await post(enforcing.base, '/livekit-token', {
-    body: { roomName: 'any_room' },
-    headers: { authorization: `Bearer ${token}` },
+  await isolated({ refuseAnonymous: true }, async (base, calls) => {
+    const token = await credentialFor(base, 'unknown');
+    const res = await post(base, '/livekit-token', {
+      body: { roomName: 'any_room' },
+      headers: { authorization: `Bearer ${token}` },
+    });
+    assert.equal(res.status, 403);
+    assert.deepEqual(calls, []);
   });
-  assert.equal(res.status, 403);
-  assert.deepEqual(mintCalls, []);
 });
 
 test('enforcing: ANY provider outside the set is refused, not just the known villains → 403', async () => {
@@ -149,13 +190,15 @@ test('enforcing: ANY provider outside the set is refused, not just the known vil
       algorithm: 'ES256', issuer: 'realm', audience: 'realm:livekit-mint',
       subject: 'user-x', expiresIn: 3600,
     });
-    mintCalls.length = 0;
-    const res = await post(enforcing.base, '/livekit-token', {
-      body: { roomName: 'any_room' },
-      headers: { authorization: `Bearer ${token}` },
+    // eslint-disable-next-line no-await-in-loop
+    await isolated({ refuseAnonymous: true }, async (base, calls) => {
+      const res = await post(base, '/livekit-token', {
+        body: { roomName: 'any_room' },
+        headers: { authorization: `Bearer ${token}` },
+      });
+      assert.equal(res.status, 403, `prov=${JSON.stringify(prov)} is not in the set and must be refused`);
+      assert.deepEqual(calls, [], `prov=${JSON.stringify(prov)} must not reach the minter`);
     });
-    assert.equal(res.status, 403, `prov=${JSON.stringify(prov)} is not in the set and must be refused`);
-    assert.deepEqual(mintCalls, [], `prov=${JSON.stringify(prov)} must not reach the minter`);
   }
 });
 
@@ -246,13 +289,15 @@ test('enforcing: a credential whose prov claim is not a usable string is refused
       algorithm: 'ES256', issuer: 'realm', audience: 'realm:livekit-mint',
       subject: 'user-x', expiresIn: 3600,
     });
-    mintCalls.length = 0;
-    const res = await post(enforcing.base, '/livekit-token', {
-      body: { roomName: 'any_room' },
-      headers: { authorization: `Bearer ${token}` },
+    // eslint-disable-next-line no-await-in-loop
+    await isolated({ refuseAnonymous: true }, async (base, calls) => {
+      const res = await post(base, '/livekit-token', {
+        body: { roomName: 'any_room' },
+        headers: { authorization: `Bearer ${token}` },
+      });
+      assert.equal(res.status, 403, `prov=${JSON.stringify(prov)} must be refused`);
+      assert.deepEqual(calls, [], `prov=${JSON.stringify(prov)} must not reach the minter`);
     });
-    assert.equal(res.status, 403, `prov=${JSON.stringify(prov)} must be refused`);
-    assert.deepEqual(mintCalls, [], `prov=${JSON.stringify(prov)} must not reach the minter`);
   }
 });
 
@@ -263,10 +308,35 @@ test('enforcing: every UNAUTHENTICATED shape is still 401, not 403', async () =>
   // Three shapes, not one. The first version pinned only a garbage bearer, which
   // is one of the three ways to arrive unauthenticated — "you measured only one of
   // the three unauthenticated shapes" (Tesla, PR #6 round 4).
+  // Tesla, PR #6 round 5: the first three shapes are all UNPARSEABLE, so they die
+  // in the bearer regex or in decoding. None of them is a structurally valid
+  // credential that merely fails verification — and that is the one that matters.
+  // A decode-then-authorize refactor (jwt.decode for a fast 403, verify after)
+  // would keep every unparseable case green while selling the policy to anyone who
+  // can sign with a throwaway P-256 key. The forged and expired cases below are
+  // what make the 401-before-403 ordering a test instead of a sentence.
+  const jwt = (await import('jsonwebtoken')).default;
+  const attacker = es256Keys();
+  const forged = (prov) => jwt.sign({ prov }, attacker.privateKeyPem, {
+    algorithm: 'ES256', issuer: 'realm', audience: 'realm:livekit-mint',
+    subject: 'mallory', expiresIn: 3600,
+  });
+  const expired = jwt.sign({ prov: 'anonymous' }, keys.privateKeyPem, {
+    algorithm: 'ES256', issuer: 'realm', audience: 'realm:livekit-mint',
+    subject: 'user-x', expiresIn: -60,
+  });
+
   const shapes = [
     ['a garbage bearer', { authorization: 'Bearer not-a-token' }],
     ['an empty bearer', { authorization: 'Bearer ' }],
     ['no Authorization header at all', {}],
+    // Well-formed ES256, wrong signing key. Both provider arms, because a
+    // decode-first bug would 403 the anonymous one and 200 the google one.
+    ['a FORGED credential claiming anonymous', { authorization: `Bearer ${forged('anonymous')}` }],
+    ['a FORGED credential claiming google', { authorization: `Bearer ${forged('google')}` }],
+    // Correctly signed but expired: authentication fails, so the policy must not
+    // be consulted and the caller must be told to re-authenticate, not refused.
+    ['a correctly-signed EXPIRED credential', { authorization: `Bearer ${expired}` }],
   ];
   for (const [name, headers] of shapes) {
     const res = await post(enforcing.base, '/livekit-token', {
@@ -345,14 +415,21 @@ test('the env string reaches the handler: REALM_REFUSE_ANONYMOUS=true → 403 ov
   //
   // This builds the app exactly as index.js does — raw env string through
   // appOptionsFromEnv into createApp — and asserts the behaviour at the wire.
-  const token = await credentialFor(fromEnv.base, 'anon');
-  mintCalls.length = 0;
-  const res = await post(fromEnv.base, '/livekit-token', {
-    body: { roomName: 'any_room' },
-    headers: { authorization: `Bearer ${token}` },
-  });
-  assert.equal(res.status, 403);
-  assert.deepEqual(mintCalls, []);
+  await isolated(
+    appOptionsFromEnv({
+      REALM_REFUSE_ANONYMOUS: 'true',
+      CORS_ALLOWED_ORIGINS: 'https://example.test',
+    }),
+    async (base, calls) => {
+      const token = await credentialFor(base, 'anon');
+      const res = await post(base, '/livekit-token', {
+        body: { roomName: 'any_room' },
+        headers: { authorization: `Bearer ${token}` },
+      });
+      assert.equal(res.status, 403);
+      assert.deepEqual(calls, []);
+    },
+  );
 });
 
 test('the env string reaches the handler: a signed-in principal still mints → 200', async () => {

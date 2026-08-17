@@ -178,10 +178,19 @@ rm -f "$BOOT_LOG"
 # (Tesla, PR #6 round 4 — the untested-wiring class one layer up from Carnot's
 # round-1 finding).
 #
-# createApp emits the EFFECTIVE policy it constructed the handler with, so this
-# line cannot stay truthful if the wiring is cut. A full end-to-end 403 is not
-# reachable here — it needs a real anonymous Firebase credential — so this
-# witnesses the value's arrival, which is the link that was actually missing.
+# SCOPE, stated exactly, because the previous version of this comment overclaimed
+# and Tesla called it (round 5): this proves the env value reached createApp in the
+# real process. It does NOT prove the handler enforces — createApp could log
+# `true` and still pass `false` into makeMintHandler, leaving the press release
+# truthful while the law goes dark. That is the same "substring, not a corpse"
+# mistake buried one section above, resurrected for the ON path.
+#
+# The lock on handler BEHAVIOUR is the in-process test
+# 'the env string reaches the handler: REALM_REFUSE_ANONYMOUS=true → 403 over
+# HTTP'. This check covers the one thing that test cannot: that the real
+# entrypoint reads the environment at all. Together they span the chain; neither
+# spans it alone. A full end-to-end 403 here would need a real anonymous Firebase
+# credential, which this script has no way to mint.
 ON_LOG=$(mktemp)
 set +e
 REALM_REFUSE_ANONYMOUS=true PORT=$((PORT + 2)) timeout 8 npm start >"$ON_LOG" 2>&1
