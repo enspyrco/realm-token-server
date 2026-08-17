@@ -59,10 +59,16 @@ signed-in provider (`SIGNED_IN_PROVIDERS` in `src/providers.js`); any other
 *valid* credential gets a **403**.
 
 An **invalid** credential — missing, forged, expired, malformed — still gets a
-**401**, exactly as before and *before* this policy is consulted. That ordering
-is deliberate: an unauthenticated caller never learns the policy exists. So the
-403 is not "everything else"; it is specifically *"you are who you say you are,
-and that is not enough."*
+**401**, exactly as before and *before* this policy is consulted. So the 403 is
+not "everything else"; it is specifically *"you are who you say you are, and
+that is not enough."*
+
+That ordering means a caller holding no valid credential learns nothing from
+**that request**. It is not secrecy about the policy, and an earlier draft of
+this paragraph overclaimed that it was: `/exchange` still mints a credential for
+an anonymous principal, so anyone can obtain one and discover the 403 on the next
+hop. The property is *no authorization decision is leaked before authentication*,
+which is worth having on its own — not that the switch is hidden.
 
 Unset (the default) is off and behaviour-identical; any value
 other than exactly `true`/`false` makes the service **refuse to start** rather

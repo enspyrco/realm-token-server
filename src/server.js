@@ -149,5 +149,30 @@ export function createApp({
     makeMintHandler({ publicKeyPem, mintLiveKitToken, refuseAnonymous }),
   );
 
+  // Announce the EFFECTIVE security posture — the values the handlers actually
+  // received, not the ones the environment supplied.
+  //
+  // This closes the last fail-open in the chain (Tesla, PR #6 round 4). Every
+  // enforcement test injects options directly and scripts/verify.sh only proves
+  // that a BAD value kills the process; nothing witnessed the ON path through the
+  // real entrypoint. Delete the `...appOptionsFromEnv(process.env)` spread from
+  // index.js and the unit suite AND verify.sh both stay green while production
+  // runs permissive — the same untested-wiring class Carnot found in round 1, one
+  // layer up. Logging from HERE (rather than from index.js) is what makes it a
+  // witness: the line reports what the mint handler was constructed with, so it
+  // cannot stay truthful if the wiring is cut.
+  //
+  // It also gives an operator a way to answer "is it actually on?" without
+  // guessing — the question the whole switch turns on.
+  // Swallowed, like every other write through this sink: the repo's standing
+  // contract is that a throwing log sink cannot take down the service, and an
+  // existing test pins it. A boot-time announcement is the last thing that should
+  // be able to prevent a boot.
+  try {
+    (log ?? console.log)(
+      JSON.stringify({ event: 'policy', refuseAnonymous, trustProxyHops }),
+    );
+  } catch { /* a broken sink must not stop the service starting */ }
+
   return app;
 }

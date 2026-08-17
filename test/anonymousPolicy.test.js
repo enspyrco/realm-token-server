@@ -105,7 +105,11 @@ test('enforcing: an anonymous principal is refused at the mint → 403, and NO t
   // authorization refusal, and conflating it with 401 would tell a caller to
   // go re-authenticate, which would not help.
   const body = await res.json();
-  assert.match(body.error, /anonymous/i);
+  // The message states the RULE, not this instance of it — the same refusal is
+  // returned for a signed-in user on an unlisted method, and telling them they
+  // are "anonymous" would be false.
+  assert.match(body.error, /recognised signed-in providers/i);
+  assert.doesNotMatch(body.error, /anonymous/i);
 });
 
 test("enforcing: an UNKNOWN provider ('firebase') is refused → 403", async () => {
@@ -175,11 +179,24 @@ test('enforcing: EVERY member of the allowlist is admitted at the wire → 200',
 });
 
 test('the allowlist cannot be grown at runtime', async () => {
-  // Object.freeze(new Set(...)) would NOT have prevented this — freeze does not
-  // touch a Set's internal [[SetData]]. The exported array is genuinely frozen and
-  // the lookup Set is module-private behind isSignedInProvider.
+  // Tesla, PR #6 round 4, on the FIRST version of this test: asserting only that
+  // `.push` throws does not prove the failure it names. On the old buggy
+  // `Object.freeze(new Set([...]))`, `.push` ALSO throws TypeError — because push
+  // is not a function on a Set — so that assertion passed identically before and
+  // after the fix. A check that cannot distinguish the bug from the fix is not a
+  // check.
+  //
+  // What actually distinguishes them is the mutator that WORKED on the Set:
+  assert.equal(typeof SIGNED_IN_PROVIDERS.add, 'undefined',
+    'the export must not be a Set — Object.freeze does not protect [[SetData]], so .add would still grow admission process-wide');
+  assert.ok(Array.isArray(SIGNED_IN_PROVIDERS));
+  assert.ok(Object.isFrozen(SIGNED_IN_PROVIDERS));
   assert.throws(() => { SIGNED_IN_PROVIDERS.push('firebase'); }, TypeError);
-  assert.ok(!isSignedInProvider('firebase'), 'the don\'t-know fallback must stay out');
+
+  // And the property that matters regardless of how the export is spelled: no
+  // reachable handle grows the set the predicate actually consults.
+  try { SIGNED_IN_PROVIDERS.push('firebase'); } catch { /* expected */ }
+  assert.ok(!isSignedInProvider('firebase'), "the don't-know fallback must stay out");
 });
 
 test('permissive: an unknown provider is unaffected when the switch is off → 200', async () => {
@@ -239,14 +256,25 @@ test('enforcing: a credential whose prov claim is not a usable string is refused
   }
 });
 
-test('enforcing: an invalid credential is still 401, not 403', async () => {
-  // Ordering matters: authentication is decided before authorization, so a
-  // forged token must not leak the policy's existence via a 403.
-  const res = await post(enforcing.base, '/livekit-token', {
-    body: { roomName: 'any_room' },
-    headers: { authorization: 'Bearer not-a-token' },
-  });
-  assert.equal(res.status, 401);
+test('enforcing: every UNAUTHENTICATED shape is still 401, not 403', async () => {
+  // Ordering matters: authentication is decided before authorization, so an
+  // unauthenticated caller must not learn on THIS request that the policy exists.
+  //
+  // Three shapes, not one. The first version pinned only a garbage bearer, which
+  // is one of the three ways to arrive unauthenticated — "you measured only one of
+  // the three unauthenticated shapes" (Tesla, PR #6 round 4).
+  const shapes = [
+    ['a garbage bearer', { authorization: 'Bearer not-a-token' }],
+    ['an empty bearer', { authorization: 'Bearer ' }],
+    ['no Authorization header at all', {}],
+  ];
+  for (const [name, headers] of shapes) {
+    const res = await post(enforcing.base, '/livekit-token', {
+      body: { roomName: 'any_room' },
+      headers,
+    });
+    assert.equal(res.status, 401, `${name} must be 401, never 403`);
+  }
 });
 
 // ---------------------------------------------------------------------------

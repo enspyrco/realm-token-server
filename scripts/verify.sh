@@ -171,6 +171,25 @@ else
 fi
 rm -f "$BOOT_LOG"
 
+# The ON path through the REAL entrypoint. The check above proves a bad value
+# kills the process; nothing proved a GOOD value reaches the handler. Delete the
+# `...appOptionsFromEnv(process.env)` spread from index.js and every unit test
+# plus the corpse check above stay green while production runs permissive
+# (Tesla, PR #6 round 4 — the untested-wiring class one layer up from Carnot's
+# round-1 finding).
+#
+# createApp emits the EFFECTIVE policy it constructed the handler with, so this
+# line cannot stay truthful if the wiring is cut. A full end-to-end 403 is not
+# reachable here — it needs a real anonymous Firebase credential — so this
+# witnesses the value's arrival, which is the link that was actually missing.
+ON_LOG=$(mktemp)
+set +e
+REALM_REFUSE_ANONYMOUS=true PORT=$((PORT + 2)) timeout 8 npm start >"$ON_LOG" 2>&1
+set -e
+check 'REALM_REFUSE_ANONYMOUS=true reaches the mint handler' 1 \
+  "$(grep -c '"refuseAnonymous":true' "$ON_LOG" >/dev/null && echo 1 || echo 0)"
+rm -f "$ON_LOG"
+
 echo
 if [ "$failures" -eq 0 ]; then
   echo "all checks passed"

@@ -74,7 +74,15 @@ export function makeMintHandler({ publicKeyPem, mintLiveKitToken, refuseAnonymou
     // absence of evidence was reading as evidence. An allowlist cannot fail that
     // way: an unknown provider is simply not in the set.
     if (refuseAnonymous === true && !isSignedInProvider(claims.provider)) {
-      return res.status(403).json({ error: 'anonymous principals are not admitted' });
+      // The message describes the RULE, not one of its instances. Saying
+      // "anonymous principals are not admitted" would be a denylist wearing the
+      // allowlist's coat: a signed-in user on an unlisted method (phone, a custom
+      // token) would be told they are a guest, and logs grepped for "anonymous"
+      // would go deaf to the actual refusees. Tesla, PR #6 round 4 — the check is
+      // positive; the utterance has to be too.
+      return res.status(403).json({
+        error: 'this deployment admits only recognised signed-in providers',
+      });
     }
 
     const roomName = req.body?.roomName;

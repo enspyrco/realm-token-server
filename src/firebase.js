@@ -27,12 +27,23 @@ function ensureApp() {
 // Maps Firebase's sign_in_provider to a Realm AuthProviderId wire string
 // (must match packages/realm AuthProviderId constants).
 //
-// EXPORTED so the anonymous arm can be pinned by a test. mint.js's
-// REALM_REFUSE_ANONYMOUS switch compares against ANONYMOUS_PROVIDER; if this
-// mapper ever emitted a different string for an anonymous sign-in, that switch
-// would silently become a placebo — green in tests, open in production. The
-// shared constant plus a pinning test makes that drift impossible rather than
-// merely commented against.
+// EXPORTED so its arms can be pinned by a test. Under REALM_REFUSE_ANONYMOUS,
+// mint.js admits a principal only if `isSignedInProvider(prov)` — an ALLOWLIST
+// (src/providers.js), not a comparison against the anonymous sentinel. So this
+// mapper is the producer of an admission fact, and two of its arms are
+// load-bearing in opposite directions:
+//
+//   - the `anonymous` arm must keep returning ANONYMOUS_PROVIDER, which is
+//     deliberately absent from the allowlist;
+//   - the `default` arm returns 'firebase', meaning "we do not know how this
+//     principal signed in", which is likewise absent — absence of evidence must
+//     not become evidence.
+//
+// Adding a sign-in method therefore means adding a case HERE and an entry in
+// SIGNED_IN_PROVIDERS, together; a case added alone is refused, which is the
+// safe direction. (This comment previously described a sentinel comparison that
+// mint.js no longer does — a fossil that would have licensed putting the
+// denylist back "to match the comment". Tesla, PR #6 round 4.)
 export function mapProvider(signInProvider) {
   switch (signInProvider) {
     case 'google.com': return 'google';
