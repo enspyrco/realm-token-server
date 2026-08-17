@@ -157,6 +157,16 @@ check 'the request log reports whether the client IP came via a proxy' 1 \
 # without this check the first bad value would be discovered by a real deploy.
 #
 # Runs on its own port so it cannot collide with the server still under test above.
+# Same occupancy discipline as the main port and the enforcement port. A held
+# PORT+1 would make this child die at bind — which still exits non-zero, so the
+# corpse check would pass for the WRONG REASON. (The follow-up assertion that the
+# log names the variable does catch it, so this fails loudly either way; the
+# explicit check just says which of the two happened.)
+if [ -n "$(listener_on $((PORT + 1)))" ]; then
+  echo "FAIL port $((PORT + 1)) (boot-refusal probe) is already in use by pid(s) $(listener_on $((PORT + 1)) | tr '\n' ' ')"
+  exit 1
+fi
+
 BOOT_LOG=$(mktemp)
 set +e
 REALM_REFUSE_ANONYMOUS=yes PORT=$((PORT + 1)) timeout 10 npm start >"$BOOT_LOG" 2>&1
@@ -204,10 +214,33 @@ rm -f "$BOOT_LOG"
 # three probes cannot be satisfied that way.
 ON_PORT=$((PORT + 2))
 ON_LOG=$(mktemp)
+
+# Refuse an occupied port, exactly as the main server does on entry. Without this
+# the failure is silent and inverted: a leftover listener (a SIGKILLed run, a node
+# that outlived the `timeout` which SIGTERMed only `npm`) means our `npm start`
+# dies at bind, the healthz loop answers the STRANGER, and the five probes below
+# measure someone else's process. If that stranger happens to refuse anonymous,
+# the load-bearing proof that THIS commit's wiring reached makeMintHandler goes
+# green in the dark. (Tesla, PR #6 round 7 — a frequency this script named for
+# PORT+2 and then only guarded on PORT.)
+if [ -n "$(listener_on "$ON_PORT")" ]; then
+  echo "FAIL port $ON_PORT (enforcement probe) is already in use by pid(s) $(listener_on "$ON_PORT" | tr '\n' ' ')"
+  echo "     Stop it, or run with a different port: PORT=8899 ./scripts/verify.sh"
+  exit 1
+fi
+
 REALM_REFUSE_ANONYMOUS=true PORT=$ON_PORT npm start >"$ON_LOG" 2>&1 &
 ON_PID=$!
 ON_BASE="http://127.0.0.1:$ON_PORT"
 for _ in $(seq 1 50); do curl -fsS "$ON_BASE/healthz" >/dev/null 2>&1 && break; sleep 0.2; done
+
+# And confirm the thing answering is OURS. A healthz 200 proves something is
+# listening, not that it is the process we started with this commit's code.
+if ! kill -0 "$ON_PID" 2>/dev/null; then
+  echo "FAIL enforcement server (pid $ON_PID) is not running — the probes below would measure a stranger"
+  cat "$ON_LOG"
+  exit 1
+fi
 
 # Sign against the SAME ephemeral private key the server verifies with.
 mint_cred() {  # $1 = prov ('' for a credential with no prov claim); $2 = 'forge' to sign with a foreign key

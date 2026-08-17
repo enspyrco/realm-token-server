@@ -149,21 +149,20 @@ export function createApp({
     makeMintHandler({ publicKeyPem, mintLiveKitToken, refuseAnonymous }),
   );
 
-  // Announce the EFFECTIVE security posture — the values the handlers actually
-  // received, not the ones the environment supplied.
+  // Announce the security posture createApp RECEIVED, so an operator can answer
+  // "is it actually on?" without guessing — the question the whole switch turns on.
   //
-  // This closes the last fail-open in the chain (Tesla, PR #6 round 4). Every
-  // enforcement test injects options directly and scripts/verify.sh only proves
-  // that a BAD value kills the process; nothing witnessed the ON path through the
-  // real entrypoint. Delete the `...appOptionsFromEnv(process.env)` spread from
-  // index.js and the unit suite AND verify.sh both stay green while production
-  // runs permissive — the same untested-wiring class Carnot found in round 1, one
-  // layer up. Logging from HERE (rather than from index.js) is what makes it a
-  // witness: the line reports what the mint handler was constructed with, so it
-  // cannot stay truthful if the wiring is cut.
+  // SCOPE, stated exactly: this reports createApp's argument. It does NOT witness
+  // the handler. Delete `refuseAnonymous` from the makeMintHandler({...}) call
+  // above and this line still publishes `true` while the handler's default
+  // parameter fails OPEN. An earlier version of this comment claimed the line
+  // "cannot stay truthful if the wiring is cut", which is false in exactly that
+  // direction (Tesla, PR #6 round 7).
   //
-  // It also gives an operator a way to answer "is it actually on?" without
-  // guessing — the question the whole switch turns on.
+  // The witnesses for HANDLER behaviour are the HTTP tests — the in-process
+  // 'env string reaches the handler → 403' case, and the five wire probes in
+  // scripts/verify.sh against the real entrypoint. This log covers only what
+  // those cannot: what a RUNNING deployment believes its own posture to be.
   // Swallowed, like every other write through this sink: the repo's standing
   // contract is that a throwing log sink cannot take down the service, and an
   // existing test pins it. A boot-time announcement is the last thing that should

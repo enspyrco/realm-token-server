@@ -62,7 +62,15 @@ export function makeMintHandler({ publicKeyPem, mintLiveKitToken, refuseAnonymou
     }
 
     // Authorization, decided only after authentication succeeded — so a forged
-    // credential still gets 401 and never learns this policy exists.
+    // credential gets 401 from THIS request without an authorization decision
+    // being computed for it.
+    //
+    // That is the whole claim, and it is not secrecy: /exchange still mints a
+    // credential for an anonymous principal, so anyone can obtain one and meet
+    // the 403 on the next hop. An earlier comment here said a forged credential
+    // "never learns this policy exists", which the README already recanted —
+    // and a comment that overclaims is how the denylist got restored "to match
+    // the comment" once already on this PR.
     //
     // Positive form: admit only a principal whose provider is PROOF that it signed
     // in. Membership in SIGNED_IN_PROVIDERS is the whole test.
