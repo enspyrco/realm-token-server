@@ -27,7 +27,7 @@ function ensureApp() {
 // Maps Firebase's sign_in_provider to a Realm AuthProviderId wire string
 // (must match packages/realm AuthProviderId constants).
 //
-// EXPORTED so its arms can be pinned by a test. Under REALM_REFUSE_ANONYMOUS,
+// EXPORTED so its arms can be pinned by a test. Under REALM_REQUIRE_KNOWN_PROVIDER,
 // mint.js admits a principal only if `isSignedInProvider(prov)` — an ALLOWLIST
 // (src/providers.js), not a comparison against the anonymous sentinel. So this
 // mapper is the producer of an admission fact, and two of its arms are

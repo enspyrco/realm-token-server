@@ -2,7 +2,7 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { createApp } from '../src/server.js';
-import { resolveRefuseAnonymous } from '../src/mint.js';
+import { resolveRequireKnownProvider } from '../src/mint.js';
 import { appOptionsFromEnv } from '../src/config.js';
 import { SIGNED_IN_PROVIDERS, isSignedInProvider } from '../src/providers.js';
 import { es256Keys } from './helpers.js';
@@ -112,11 +112,11 @@ let omitted;    // the key absent entirely — the real production default path
 let fromEnv;    // built the way index.js builds it: env string -> options -> app
 
 before(async () => {
-  enforcing = await makeServer({ refuseAnonymous: true });
-  permissive = await makeServer({ refuseAnonymous: false });
+  enforcing = await makeServer({ requireKnownProvider: true });
+  permissive = await makeServer({ requireKnownProvider: false });
   omitted = await makeServer({});
   fromEnv = await makeServer(appOptionsFromEnv({
-    REALM_REFUSE_ANONYMOUS: 'true',
+    REALM_REQUIRE_KNOWN_PROVIDER: 'true',
     CORS_ALLOWED_ORIGINS: 'https://example.test',
   }));
 });
@@ -129,7 +129,7 @@ after(() => Promise.all([enforcing, permissive, omitted, fromEnv].map(
 // ---------------------------------------------------------------------------
 
 test('enforcing: an anonymous principal is refused at the mint → 403, and NO token is minted', async () => {
-  const { res, calls } = await isolated({ refuseAnonymous: true }, async (base, calls) => {
+  const { res, calls } = await isolated({ requireKnownProvider: true }, async (base, calls) => {
     const token = await credentialFor(base, 'anon');
     const res = await post(base, '/livekit-token', {
       body: { roomName: 'any_room' },
@@ -161,7 +161,7 @@ test("enforcing: an UNKNOWN provider ('firebase') is refused → 403", async () 
   //
   // Delete SIGNED_IN_PROVIDERS and fall back to a not-the-sentinel check, and this
   // test goes red. That is the point of it.
-  await isolated({ refuseAnonymous: true }, async (base, calls) => {
+  await isolated({ requireKnownProvider: true }, async (base, calls) => {
     const token = await credentialFor(base, 'unknown');
     const res = await post(base, '/livekit-token', {
       body: { roomName: 'any_room' },
@@ -191,7 +191,7 @@ test('enforcing: ANY provider outside the set is refused, not just the known vil
       subject: 'user-x', expiresIn: 3600,
     });
     // eslint-disable-next-line no-await-in-loop
-    await isolated({ refuseAnonymous: true }, async (base, calls) => {
+    await isolated({ requireKnownProvider: true }, async (base, calls) => {
       const res = await post(base, '/livekit-token', {
         body: { roomName: 'any_room' },
         headers: { authorization: `Bearer ${token}` },
@@ -290,7 +290,7 @@ test('enforcing: a credential whose prov claim is not a usable string is refused
       subject: 'user-x', expiresIn: 3600,
     });
     // eslint-disable-next-line no-await-in-loop
-    await isolated({ refuseAnonymous: true }, async (base, calls) => {
+    await isolated({ requireKnownProvider: true }, async (base, calls) => {
       const res = await post(base, '/livekit-token', {
         body: { roomName: 'any_room' },
         headers: { authorization: `Bearer ${token}` },
@@ -369,7 +369,7 @@ test('permissive (the default): an anonymous principal still mints → 200', asy
 
 test('the createApp default is off when the option is OMITTED, not just passed false', async () => {
   // Raised by Tesla on PR #6: the permissive case was only ever tested with an
-  // explicit `{refuseAnonymous: false}`. Flip createApp's default parameter to
+  // explicit `{requireKnownProvider: false}`. Flip createApp's default parameter to
   // `true` and that test still smiles while every deployment that never sets the
   // option starts refusing guests. Pin the default itself.
   const token = await credentialFor(omitted.base, 'anon');
@@ -380,7 +380,7 @@ test('the createApp default is off when the option is OMITTED, not just passed f
   assert.equal(res.status, 200);
 });
 
-test('a NON-BOOLEAN refuseAnonymous is refused at construction, not coerced', async () => {
+test('a NON-BOOLEAN requireKnownProvider is refused at construction, not coerced', async () => {
   // Both string directions are traps and neither should be guessed: "false" is
   // truthy (would enforce in the dark), and "true" would be silently ignored under
   // a `=== true` gate (would NOT enforce while the operator believed it did).
@@ -399,17 +399,17 @@ test('a NON-BOOLEAN refuseAnonymous is refused at construction, not coerced', as
         publicKeyPem: keys.publicKeyPem,
         mintLiveKitToken: fakeMint,
         allowedOrigins: [],
-        refuseAnonymous: bad,
+        requireKnownProvider: bad,
       }),
-      /refuseAnonymous must be a boolean/,
+      /requireKnownProvider must be a boolean/,
       `${JSON.stringify(bad)} must be refused, not coerced`,
     );
   }
 });
 
-test('the env string reaches the handler: REALM_REFUSE_ANONYMOUS=true → 403 over HTTP', async () => {
+test('the env string reaches the handler: REALM_REQUIRE_KNOWN_PROVIDER=true → 403 over HTTP', async () => {
   // Closes the last unbound link Tesla named: every enforcement test injected a
-  // boolean directly, so an index.js that CALLED resolveRefuseAnonymous (keeping
+  // boolean directly, so an index.js that CALLED resolveRequireKnownProvider (keeping
   // the boot-refusal green) and then discarded the result would leave the unit
   // suite and verify.sh both green with production permissive.
   //
@@ -417,7 +417,7 @@ test('the env string reaches the handler: REALM_REFUSE_ANONYMOUS=true → 403 ov
   // appOptionsFromEnv into createApp — and asserts the behaviour at the wire.
   await isolated(
     appOptionsFromEnv({
-      REALM_REFUSE_ANONYMOUS: 'true',
+      REALM_REQUIRE_KNOWN_PROVIDER: 'true',
       CORS_ALLOWED_ORIGINS: 'https://example.test',
     }),
     async (base, calls) => {
@@ -441,23 +441,23 @@ test('the env string reaches the handler: a signed-in principal still mints → 
   assert.equal(res.status, 200);
 });
 
-test('resolveRefuseAnonymous: unset → false (off by default)', () => {
-  assert.equal(resolveRefuseAnonymous({}), false);
+test('resolveRequireKnownProvider: unset → false (off by default)', () => {
+  assert.equal(resolveRequireKnownProvider({}), false);
 });
 
-test('resolveRefuseAnonymous: "true"/"false" parse exactly', () => {
-  assert.equal(resolveRefuseAnonymous({ REALM_REFUSE_ANONYMOUS: 'true' }), true);
-  assert.equal(resolveRefuseAnonymous({ REALM_REFUSE_ANONYMOUS: 'false' }), false);
+test('resolveRequireKnownProvider: "true"/"false" parse exactly', () => {
+  assert.equal(resolveRequireKnownProvider({ REALM_REQUIRE_KNOWN_PROVIDER: 'true' }), true);
+  assert.equal(resolveRequireKnownProvider({ REALM_REQUIRE_KNOWN_PROVIDER: 'false' }), false);
 });
 
-test('resolveRefuseAnonymous: an unrecognised value REFUSES TO START', () => {
+test('resolveRequireKnownProvider: an unrecognised value REFUSES TO START', () => {
   // A security switch that silently reads "yes"/"1"/"TRUE" as off would fail
   // silently in the direction that matters. Refuse to boot instead — same
   // contract as resolveTrustProxyHops.
   for (const v of ['yes', '1', 'TRUE', 'on', '']) {
     assert.throws(
-      () => resolveRefuseAnonymous({ REALM_REFUSE_ANONYMOUS: v }),
-      /REALM_REFUSE_ANONYMOUS/,
+      () => resolveRequireKnownProvider({ REALM_REQUIRE_KNOWN_PROVIDER: v }),
+      /REALM_REQUIRE_KNOWN_PROVIDER/,
       `"${v}" must not be silently accepted`,
     );
   }

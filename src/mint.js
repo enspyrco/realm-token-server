@@ -9,13 +9,13 @@ import { isSignedInProvider } from './providers.js';
  * or "1" as false fails silently in the one direction that matters. Same
  * contract as resolveTrustProxyHops: refuse to boot rather than run mis-set.
  */
-export function resolveRefuseAnonymous(env) {
-  const raw = env.REALM_REFUSE_ANONYMOUS;
+export function resolveRequireKnownProvider(env) {
+  const raw = env.REALM_REQUIRE_KNOWN_PROVIDER;
   if (raw === undefined) return false;
   if (raw === 'true') return true;
   if (raw === 'false') return false;
   throw new Error(
-    `REALM_REFUSE_ANONYMOUS must be exactly "true" or "false" (got ${JSON.stringify(raw)})`,
+    `REALM_REQUIRE_KNOWN_PROVIDER must be exactly "true" or "false" (got ${JSON.stringify(raw)})`,
   );
 }
 
@@ -27,21 +27,21 @@ export function resolveRefuseAnonymous(env) {
 //
 // STILL NOT ROOM AUTHORIZATION. Any signed-in caller may name any room; the
 // admission predicate belongs to the engine and does not exist yet
-// (claude-tasks#2850, docs/crucible/room-admission/DESIGN.md). refuseAnonymous
+// (claude-tasks#2850, docs/crucible/room-admission/DESIGN.md). requireKnownProvider
 // is step 0 of that design and is a RISK TRIM, not the fix: it removes the
 // throwaway-uid caller, not the arbitrary-room capability. It is superseded by
 // per-room `permissions.allowAnonymous` once the engine ships it.
-export function makeMintHandler({ publicKeyPem, mintLiveKitToken, refuseAnonymous = false }) {
+export function makeMintHandler({ publicKeyPem, mintLiveKitToken, requireKnownProvider = false }) {
   // Reject a non-boolean at CONSTRUCTION rather than coercing at request time.
   // Gating on `=== true` alone is safe against the string "false" (truthy, would
   // have enforced in the dark) but silently permissive against the string "true" —
   // the complementary 3am, "I set it to true and nothing happened" (Tesla, PR #6).
   // Neither direction should be guessed: a caller that hands this a string has a
   // wiring bug, and a wiring bug in a security switch must be loud.
-  if (typeof refuseAnonymous !== 'boolean') {
+  if (typeof requireKnownProvider !== 'boolean') {
     throw new TypeError(
-      `makeMintHandler: refuseAnonymous must be a boolean, got ${typeof refuseAnonymous} `
-      + `(${JSON.stringify(refuseAnonymous)}) — resolve it via appOptionsFromEnv, not raw env`,
+      `makeMintHandler: requireKnownProvider must be a boolean, got ${typeof requireKnownProvider} `
+      + `(${JSON.stringify(requireKnownProvider)}) — resolve it via appOptionsFromEnv, not raw env`,
     );
   }
   return async function mint(req, res) {
@@ -81,7 +81,7 @@ export function makeMintHandler({ publicKeyPem, mintLiveKitToken, refuseAnonymou
     // mapProvider returns for a MISSING or unrecognised sign_in_provider, so
     // absence of evidence was reading as evidence. An allowlist cannot fail that
     // way: an unknown provider is simply not in the set.
-    if (refuseAnonymous === true && !isSignedInProvider(claims.provider)) {
+    if (requireKnownProvider === true && !isSignedInProvider(claims.provider)) {
       // The message describes the RULE, not one of its instances. Saying
       // "anonymous principals are not admitted" would be a denylist wearing the
       // allowlist's coat: a signed-in user on an unlisted method (phone, a custom

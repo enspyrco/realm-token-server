@@ -7,7 +7,7 @@ import { ANONYMOUS_PROVIDER, isSignedInProvider } from '../src/providers.js';
 
 // Raised by CarnotCodeCarver on PR #6: the env resolvers were tested and the
 // handlers were tested with options injected, but nothing tested that a resolver's
-// output actually REACHED the handler. Deleting the refuseAnonymous wiring left the
+// output actually REACHED the handler. Deleting the requireKnownProvider wiring left the
 // suite green while production ran permissive. These tests bind the wiring itself.
 
 // The minimum env that boots. CORS_ALLOWED_ORIGINS is required by
@@ -16,19 +16,19 @@ import { ANONYMOUS_PROVIDER, isSignedInProvider } from '../src/providers.js';
 const baseEnv = { CORS_ALLOWED_ORIGINS: 'https://example.test' };
 const envWith = (extra) => ({ ...baseEnv, ...extra });
 
-test('appOptionsFromEnv carries REALM_REFUSE_ANONYMOUS through to the app options', () => {
-  assert.equal(appOptionsFromEnv(envWith({ REALM_REFUSE_ANONYMOUS: 'true' })).refuseAnonymous, true);
-  assert.equal(appOptionsFromEnv(envWith({ REALM_REFUSE_ANONYMOUS: 'false' })).refuseAnonymous, false);
+test('appOptionsFromEnv carries REALM_REQUIRE_KNOWN_PROVIDER through to the app options', () => {
+  assert.equal(appOptionsFromEnv(envWith({ REALM_REQUIRE_KNOWN_PROVIDER: 'true' })).requireKnownProvider, true);
+  assert.equal(appOptionsFromEnv(envWith({ REALM_REQUIRE_KNOWN_PROVIDER: 'false' })).requireKnownProvider, false);
 });
 
-test('appOptionsFromEnv defaults refuseAnonymous to false when the var is absent', () => {
-  assert.equal(appOptionsFromEnv(baseEnv).refuseAnonymous, false);
+test('appOptionsFromEnv defaults requireKnownProvider to false when the var is absent', () => {
+  assert.equal(appOptionsFromEnv(baseEnv).requireKnownProvider, false);
 });
 
 test('appOptionsFromEnv yields a real BOOLEAN, never a string', () => {
-  // makeMintHandler gates on `refuseAnonymous === true`, so a string "true" would
+  // makeMintHandler gates on `requireKnownProvider === true`, so a string "true" would
   // silently disable the switch. Pin the type, not just the value.
-  const v = appOptionsFromEnv(envWith({ REALM_REFUSE_ANONYMOUS: 'true' })).refuseAnonymous;
+  const v = appOptionsFromEnv(envWith({ REALM_REQUIRE_KNOWN_PROVIDER: 'true' })).requireKnownProvider;
   assert.equal(typeof v, 'boolean');
 });
 
@@ -36,8 +36,8 @@ test('appOptionsFromEnv refuses to produce options for an uninterpretable switch
   // The boot-time refusal has to survive the extraction: if config.js swallowed the
   // throw, `npm start` would come up permissive on a typo'd value.
   assert.throws(
-    () => appOptionsFromEnv(envWith({ REALM_REFUSE_ANONYMOUS: 'yes' })),
-    /REALM_REFUSE_ANONYMOUS/,
+    () => appOptionsFromEnv(envWith({ REALM_REQUIRE_KNOWN_PROVIDER: 'yes' })),
+    /REALM_REQUIRE_KNOWN_PROVIDER/,
   );
 });
 
@@ -62,7 +62,7 @@ test('appOptionsFromEnv preserves every OTHER resolver\'s boot refusal too', () 
 test("mapProvider pins Firebase's anonymous sign-in to ANONYMOUS_PROVIDER", () => {
   // Raised by Tesla on PR #6: 'anonymous' was a password shared by three places by
   // convention. If this mapper ever emitted "Anonymous" or "firebase.anonymous",
-  // REALM_REFUSE_ANONYMOUS would become a placebo — green here, open in production.
+  // REALM_REQUIRE_KNOWN_PROVIDER would become a placebo — green here, open in production.
   // Both sides now read one constant, and this test fails if they ever diverge.
   assert.equal(mapProvider('anonymous'), ANONYMOUS_PROVIDER);
   assert.ok(!isSignedInProvider(mapProvider('anonymous')));

@@ -25,7 +25,7 @@ export const ANONYMOUS_PROVIDER = 'anonymous';
  * Membership here is the only proof. `'firebase'` is deliberately ABSENT: it means
  * "we do not know how this principal signed in", which is not an answer.
  *
- * Consequence, and it is the intended direction: enabling REALM_REFUSE_ANONYMOUS on
+ * Consequence, and it is the intended direction: enabling REALM_REQUIRE_KNOWN_PROVIDER on
  * a deployment using a provider not listed here (phone auth, a custom token, a new
  * OIDC provider) refuses those users until the provider is added — mapProvider must
  * gain a case and this set must gain an entry, together. A security switch that

@@ -51,7 +51,7 @@ here, at the mint: LiveKit has **no pre-join admission hook** (webhooks fire
 after the media connection is established), so the access token *is* the
 admission decision.
 
-### `REALM_REFUSE_ANONYMOUS` — a risk trim, not the fix
+### `REALM_REQUIRE_KNOWN_PROVIDER` — a risk trim, not the fix
 
 Step 0 of that design, and the only part of it that exists today. Set it to
 `true` and `/livekit-token` admits **only** a credential whose `prov` is a known
@@ -275,7 +275,7 @@ distributed attack.
 
 It is also **not** authorization. `/livekit-token` still mints a token for any
 `roomName` to any holder of a valid credential; admission control does not exist
-yet (claude-tasks#2850). `REALM_REFUSE_ANONYMOUS` narrows *who may use a
+yet (claude-tasks#2850). `REALM_REQUIRE_KNOWN_PROVIDER` narrows *who may use a
 credential at the mint*, not *which rooms they may name* — `/exchange` still
 issues credentials to anonymous principals; they are refused at
 `/livekit-token`.

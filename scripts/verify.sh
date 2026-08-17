@@ -104,6 +104,30 @@ check 'healthz serves' 200 "$(status "$BASE/healthz")"
 
 check 'a bad token is refused, not thrown' 401 "$(post_exchange)"
 
+# The THIRD state of the switch, at the real entrypoint. The corpse check binds
+# the typo case and the ON probes bind "true"; this binds UNSET — the default, and
+# the one the README promises is behaviour-identical. Hardcode the flag on after
+# the index.js spread and every other check here stays green while that promise
+# shatters (Tesla, PR #6 round 8 — availability, not fail-open, hence not a
+# blocker, but it closes the triad).
+#
+# Deliberately BEFORE the rate-limit section: those checks deliberately exhaust
+# the mint ceiling, and a 429 here would be indistinguishable from a refusal.
+mint_cred_main() {
+  node -e '
+    const jwt = require("jsonwebtoken");
+    process.stdout.write(jwt.sign({ prov: process.argv[1] }, process.env.REALM_JWT_PRIVATE_KEY, {
+      algorithm: "ES256", issuer: "realm", audience: "realm:livekit-mint",
+      subject: "verify-sh-default", expiresIn: 3600,
+    }));
+  ' "$1"
+}
+check 'UNSET: an anonymous principal still mints (default is off)' 200 \
+  "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/livekit-token" \
+      -H 'content-type: application/json' \
+      -H "authorization: Bearer $(mint_cred_main anonymous)" \
+      -d '{"roomName":"default_room"}')"
+
 check 'an allowed origin gets a preflight' 204 \
   "$(status -X OPTIONS "$BASE/exchange" -H "Origin: $CORS_ALLOWED_ORIGINS" -H 'Access-Control-Request-Method: POST')"
 
@@ -127,11 +151,13 @@ check 'the per-IP ceiling refuses the next request' 429 "$(post_exchange)"
 # report green with the mint route wide open.
 check 'the mint route still has its own budget' 401 \
   "$(status -X POST "$BASE/livekit-token" -H 'content-type: application/json' -d '{"roomName":"r"}')"
-# 29, not 30: the check above already spent one, so this takes the window to
-# exactly the ceiling and the assertion below is the FIRST refusal rather than
+# 28, not 30: TWO checks above already spent one mint request each — the budget
+# check, and the UNSET default-off probe added in PR #6 — so this takes the window
+# to exactly the ceiling and the assertion below is the FIRST refusal rather than
 # some request after it. A probe that lands past the boundary still goes red when
 # the limiter is missing, but it no longer measures where the boundary is.
-for _ in $(seq 1 29); do
+# KEEP THIS IN SYNC: every mint-route request added above must come off this count.
+for _ in $(seq 1 28); do
   curl -s -o /dev/null -X POST "$BASE/livekit-token" -H 'content-type: application/json' -d '{"roomName":"r"}'
 done
 check 'the mint route enforces its own ceiling' 429 \
@@ -151,7 +177,7 @@ check 'the request log reports whether the client IP came via a proxy' 1 \
   "$(grep -c '"proxied":false' "$LOG" >/dev/null && echo 1 || echo 0)"
 
 # A boot-time refusal only counts if it happens to a REAL process. The unit suite
-# can assert resolveRefuseAnonymous throws; only this loop can assert that the
+# can assert resolveRequireKnownProvider throws; only this loop can assert that the
 # throw actually reaches `npm start` and stops the container coming up. Raised by
 # Tesla on PR #6: the new throw is exactly the class this script exists for, and
 # without this check the first bad value would be discovered by a real deploy.
@@ -169,7 +195,7 @@ fi
 
 BOOT_LOG=$(mktemp)
 set +e
-REALM_REFUSE_ANONYMOUS=yes PORT=$((PORT + 1)) timeout 10 npm start >"$BOOT_LOG" 2>&1
+REALM_REQUIRE_KNOWN_PROVIDER=yes PORT=$((PORT + 1)) timeout 10 npm start >"$BOOT_LOG" 2>&1
 BOOT_RC=$?
 set -e
 
@@ -180,15 +206,15 @@ set -e
 #          listen-anyway is the false green this check exists to prevent.
 #   else-> it died on its own, which is the refusal we want.
 if [ "$BOOT_RC" -eq 124 ]; then
-  check 'a bad REALM_REFUSE_ANONYMOUS refuses to boot' 'died' 'still serving after 10s'
+  check 'a bad REALM_REQUIRE_KNOWN_PROVIDER refuses to boot' 'died' 'still serving after 10s'
 elif [ "$BOOT_RC" -eq 0 ]; then
-  check 'a bad REALM_REFUSE_ANONYMOUS refuses to boot' 'died' 'exited 0 without refusing'
+  check 'a bad REALM_REQUIRE_KNOWN_PROVIDER refuses to boot' 'died' 'exited 0 without refusing'
 else
-  check 'a bad REALM_REFUSE_ANONYMOUS refuses to boot' 'died' 'died'
+  check 'a bad REALM_REQUIRE_KNOWN_PROVIDER refuses to boot' 'died' 'died'
   # And it must say WHY: a service that dies silently on a typo is
   # indistinguishable from one that crashed for an unrelated reason.
   check 'the boot refusal names the variable' 1 \
-    "$(grep -c 'REALM_REFUSE_ANONYMOUS' "$BOOT_LOG" >/dev/null && echo 1 || echo 0)"
+    "$(grep -c 'REALM_REQUIRE_KNOWN_PROVIDER' "$BOOT_LOG" >/dev/null && echo 1 || echo 0)"
 fi
 rm -f "$BOOT_LOG"
 
@@ -210,7 +236,7 @@ rm -f "$BOOT_LOG"
 # 6 — an impossibility claim that consumed its own falsifier.)
 #
 # A log line is the same class as the substring buried above: createApp could
-# print refuseAnonymous:true and still hand `false` to makeMintHandler. These
+# print requireKnownProvider:true and still hand `false` to makeMintHandler. These
 # three probes cannot be satisfied that way.
 ON_PORT=$((PORT + 2))
 ON_LOG=$(mktemp)
@@ -229,7 +255,7 @@ if [ -n "$(listener_on "$ON_PORT")" ]; then
   exit 1
 fi
 
-REALM_REFUSE_ANONYMOUS=true PORT=$ON_PORT npm start >"$ON_LOG" 2>&1 &
+REALM_REQUIRE_KNOWN_PROVIDER=true PORT=$ON_PORT npm start >"$ON_LOG" 2>&1 &
 ON_PID=$!
 ON_BASE="http://127.0.0.1:$ON_PORT"
 for _ in $(seq 1 50); do curl -fsS "$ON_BASE/healthz" >/dev/null 2>&1 && break; sleep 0.2; done
