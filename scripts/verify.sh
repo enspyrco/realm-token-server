@@ -33,7 +33,15 @@ check() {
   fi
 }
 
-port_listener() { lsof -tiTCP:"$PORT" -sTCP:LISTEN 2>/dev/null || true; }
+port_listener() { listener_on "$PORT"; }
+# Any port, not just the main one. The boot-refusal and enforcement checks below
+# run children on PORT+1 / PORT+2, and cleanup has to be able to reach those too:
+# `timeout` SIGTERMs `npm`, not necessarily the `node` it spawned, and the
+# enforcement server is DESIGNED to still be serving when its timeout fires. An
+# orphan on :PORT+2 would make the next run's ON server die at bind — after
+# createApp had already emitted its policy line — so a log-grep check would stay
+# green against last week's corpse. (Tesla, PR #6 round 6.)
+listener_on() { lsof -tiTCP:"$1" -sTCP:LISTEN 2>/dev/null || true; }
 
 SERVER_PID=""
 cleanup() {
@@ -43,9 +51,12 @@ cleanup() {
   # build serves every assertion under the new one's name.
   [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null || true
   wait "$SERVER_PID" 2>/dev/null || true
-  local held
-  held="$(port_listener)"
-  [ -n "$held" ] && kill $held 2>/dev/null || true
+  local held p
+  # Every port this script may have bound, not only the main one.
+  for p in "$PORT" $((PORT + 1)) $((PORT + 2)); do
+    held="$(listener_on "$p")"
+    [ -n "$held" ] && kill $held 2>/dev/null || true
+  done
   if [ "$failures" -ne 0 ]; then
     echo
     echo "--- server log ---"
@@ -178,25 +189,57 @@ rm -f "$BOOT_LOG"
 # (Tesla, PR #6 round 4 — the untested-wiring class one layer up from Carnot's
 # round-1 finding).
 #
-# SCOPE, stated exactly, because the previous version of this comment overclaimed
-# and Tesla called it (round 5): this proves the env value reached createApp in the
-# real process. It does NOT prove the handler enforces — createApp could log
-# `true` and still pass `false` into makeMintHandler, leaving the press release
-# truthful while the law goes dark. That is the same "substring, not a corpse"
-# mistake buried one section above, resurrected for the ON path.
+# The ON path, proven at the WIRE — the corpse, not the press release.
 #
-# The lock on handler BEHAVIOUR is the in-process test
-# 'the env string reaches the handler: REALM_REFUSE_ANONYMOUS=true → 403 over
-# HTTP'. This check covers the one thing that test cannot: that the real
-# entrypoint reads the environment at all. Together they span the chain; neither
-# spans it alone. A full end-to-end 403 here would need a real anonymous Firebase
-# credential, which this script has no way to mint.
+# An earlier version grepped the boot log for the policy line and claimed a real
+# 403 was unreachable "without a real anonymous Firebase credential". That was a
+# manufactured blocker, and a wrong picture of the machine: /livekit-token never
+# speaks to Firebase. It verifies a Realm JWT with the ES256 public key already in
+# this process's environment, and devenv.sh has already exported the matching
+# PRIVATE key. So the credentials can simply be minted here. (Tesla, PR #6 round
+# 6 — an impossibility claim that consumed its own falsifier.)
+#
+# A log line is the same class as the substring buried above: createApp could
+# print refuseAnonymous:true and still hand `false` to makeMintHandler. These
+# three probes cannot be satisfied that way.
+ON_PORT=$((PORT + 2))
 ON_LOG=$(mktemp)
-set +e
-REALM_REFUSE_ANONYMOUS=true PORT=$((PORT + 2)) timeout 8 npm start >"$ON_LOG" 2>&1
-set -e
-check 'REALM_REFUSE_ANONYMOUS=true reaches the mint handler' 1 \
-  "$(grep -c '"refuseAnonymous":true' "$ON_LOG" >/dev/null && echo 1 || echo 0)"
+REALM_REFUSE_ANONYMOUS=true PORT=$ON_PORT npm start >"$ON_LOG" 2>&1 &
+ON_PID=$!
+ON_BASE="http://127.0.0.1:$ON_PORT"
+for _ in $(seq 1 50); do curl -fsS "$ON_BASE/healthz" >/dev/null 2>&1 && break; sleep 0.2; done
+
+# Sign against the SAME ephemeral private key the server verifies with.
+mint_cred() {  # $1 = prov ('' for a credential with no prov claim); $2 = 'forge' to sign with a foreign key
+  node -e '
+    const jwt = require("jsonwebtoken");
+    const crypto = require("crypto");
+    const prov = process.argv[1];
+    const key = process.argv[2] === "forge"
+      ? crypto.generateKeyPairSync("ec", { namedCurve: "P-256" }).privateKey.export({ type: "pkcs8", format: "pem" })
+      : process.env.REALM_JWT_PRIVATE_KEY;
+    const payload = prov ? { prov } : {};
+    process.stdout.write(jwt.sign(payload, key, {
+      algorithm: "ES256", issuer: "realm", audience: "realm:livekit-mint",
+      subject: "verify-sh", expiresIn: 3600,
+    }));
+  ' "$1" "${2:-}"
+}
+mint_status() {  # $1 = bearer
+  curl -s -o /dev/null -w '%{http_code}' -X POST "$ON_BASE/livekit-token" \
+    -H 'content-type: application/json' -H "authorization: Bearer $1" \
+    -d '{"roomName":"verify_room"}'
+}
+
+check 'ON: an anonymous principal is refused at the wire' 403 "$(mint_status "$(mint_cred anonymous)")"
+check 'ON: an unknown provider is refused at the wire'    403 "$(mint_status "$(mint_cred firebase)")"
+check 'ON: a credential with no prov is refused'          403 "$(mint_status "$(mint_cred '')")"
+check 'ON: a signed-in principal still mints'             200 "$(mint_status "$(mint_cred google)")"
+check 'ON: a forged credential is 401, never 403'         401 "$(mint_status "$(mint_cred anonymous forge)")"
+
+kill "$ON_PID" 2>/dev/null || true
+wait "$ON_PID" 2>/dev/null || true
+held="$(listener_on "$ON_PORT")"; [ -n "$held" ] && kill $held 2>/dev/null || true
 rm -f "$ON_LOG"
 
 echo
