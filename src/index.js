@@ -1,9 +1,7 @@
 import { createApp } from './server.js';
 import { verifyFirebaseIdToken } from './firebase.js';
 import { makeLiveKitMinter } from './livekit.js';
-import { corsConfigFromEnv } from './cors.js';
-import { resolveTrustProxyHops } from './rateLimit.js';
-import { resolveRefuseAnonymous } from './mint.js';
+import { appOptionsFromEnv } from './config.js';
 
 function requireEnv(name) {
   const v = process.env[name];
@@ -24,10 +22,9 @@ const app = createApp({
     apiKey: requireEnv('LIVEKIT_API_KEY'),
     apiSecret: requireEnv('LIVEKIT_API_SECRET'),
   }),
-  ttlSeconds: Number(process.env.REALM_CREDENTIAL_TTL_SECONDS || 3600),
-  trustProxyHops: resolveTrustProxyHops(process.env),
-  refuseAnonymous: resolveRefuseAnonymous(process.env),
-  ...corsConfigFromEnv(process.env),
+  // Every env-derived option comes through ONE tested door (src/config.js), so a
+  // dropped key fails a test rather than silently disabling a security switch.
+  ...appOptionsFromEnv(process.env),
 });
 
 const port = Number(process.env.PORT || 8080);

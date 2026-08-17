@@ -264,8 +264,14 @@ must guess 128 bits. The invite document must therefore contain **nothing sensit
 `createdBy` identity, no room contents — since possession of the hash grants the read.
 
 Accepted, and written plainly rather than implied: **a capability is transferable — whoever holds it
-is admitted.** That is the security model of every "anyone with the link" share on the web. §3's
-`jti` single-use rule bounds the *derived ticket*; it does not bound the code itself.
+is admitted**, repeatedly, until it expires or an owner revokes it. That is the security model of
+every "anyone with the link" share on the web. Nothing bounds the *number* of admissions — §3
+deleted the `jti` single-use mechanism precisely because it could not, so a world needing one-shot
+admission issues a short-expiry single-recipient code rather than relying on the engine to count.
+
+*(Ghost-claim note, caught by Tesla on PR #6: an earlier revision of this paragraph still cited
+"§3's `jti` single-use rule" after round 2 had deleted `jti`. A stale claim in a tempered document is
+how a later implementer resurrects a store the temper killed.)*
 
 ## 7. Failure modes of the caller-ID-token lookup
 

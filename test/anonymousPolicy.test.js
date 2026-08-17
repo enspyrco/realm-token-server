@@ -20,7 +20,14 @@ async function fakeVerify(idToken) {
   if (idToken === 'anon') return { uid: 'guest-1', provider: 'anonymous' };
   throw new Error('bad token');
 }
+// Records every invocation. A refused request must never reach the minter at all:
+// mintLiveKitToken embeds RoomAgentDispatch (src/livekit.js:22-24), so minting for a
+// principal we then refuse would dispatch three agents into the room on every 403.
+// Asserting only the status code would let a reorder (mint, then refuse) stay green
+// while doing exactly that. Raised by Tesla on PR #6.
+const mintCalls = [];
 async function fakeMint({ identity, roomName }) {
+  mintCalls.push({ identity, roomName });
   return `lk-token:${identity}:${roomName}`;
 }
 
@@ -57,27 +64,34 @@ async function credentialFor(base, idToken) {
 
 let enforcing;
 let permissive;
+let omitted;   // the key absent entirely — the real production default path
+let stringy;   // refuseAnonymous: "false", the truthiness trap
 
 before(async () => {
   enforcing = await makeServer({ refuseAnonymous: true });
   permissive = await makeServer({ refuseAnonymous: false });
+  omitted = await makeServer({});
+  stringy = await makeServer({ refuseAnonymous: 'false' });
 });
-after(() => Promise.all([
-  new Promise((r) => enforcing.server.close(r)),
-  new Promise((r) => permissive.server.close(r)),
-]));
+after(() => Promise.all([enforcing, permissive, omitted, stringy].map(
+  (s) => new Promise((r) => s.server.close(r)),
+)));
 
 // ---------------------------------------------------------------------------
 // The capability this exists to remove.
 // ---------------------------------------------------------------------------
 
-test('enforcing: an anonymous principal is refused at the mint → 403', async () => {
+test('enforcing: an anonymous principal is refused at the mint → 403, and NO token is minted', async () => {
   const token = await credentialFor(enforcing.base, 'anon');
+  mintCalls.length = 0;
   const res = await post(enforcing.base, '/livekit-token', {
     body: { roomName: 'any_room' },
     headers: { authorization: `Bearer ${token}` },
   });
   assert.equal(res.status, 403);
+  // The side effect, not just the status. A reorder that minted first and refused
+  // after would still return 403 while dispatching agents for every rejected guest.
+  assert.deepEqual(mintCalls, [], 'the LiveKit minter must not run for a refused principal');
   // 403 not 401: the credential is VALID and was verified. This is an
   // authorization refusal, and conflating it with 401 would tell a caller to
   // go re-authenticate, which would not help.
@@ -99,20 +113,36 @@ test('enforcing: a signed-in principal is unaffected → 200', async () => {
 // Fail-closed: the refusal must not depend on a claim an attacker can omit.
 // ---------------------------------------------------------------------------
 
-test('enforcing: a credential with NO provider claim is refused → 403', async () => {
+test('enforcing: a credential whose prov claim is not a usable string is refused → 403', async () => {
   // A credential that cannot PROVE it is non-anonymous must not be admitted.
-  // Positive rule: admit only what is demonstrably permitted. If this ever
-  // returns 200, the check has become "refuse the known-bad" — a denylist.
+  // Positive rule: admit only what is demonstrably permitted.
+  //
+  // `prov !== undefined` alone would be a TWO-VALUE DENYLIST wearing a positive
+  // robe — null, "", 0 and any non-string would all sail through as "proven
+  // non-anonymous". Tesla raised exactly this on PR #6, and the values below are
+  // the ones a future signer (or a Dart twin) could plausibly emit. Each must be
+  // refused, because none of them is proof of anything.
+  //
+  // Note on scope: this asserts the mint's policy over whatever shape a validly
+  // SIGNED credential carries. It is deliberately not a credential-format test —
+  // if verifyRealmCredential later makes `prov` mandatory, these become
+  // unreachable-by-construction rather than wrong, and should be revisited then
+  // (CarnotCodeCarver's concern on PR #6).
   const jwt = (await import('jsonwebtoken')).default;
-  const noProv = jwt.sign({}, keys.privateKeyPem, {
-    algorithm: 'ES256', issuer: 'realm', audience: 'realm:livekit-mint',
-    subject: 'user-x', expiresIn: 3600,
-  });
-  const res = await post(enforcing.base, '/livekit-token', {
-    body: { roomName: 'any_room' },
-    headers: { authorization: `Bearer ${noProv}` },
-  });
-  assert.equal(res.status, 403);
+  for (const prov of [undefined, null, '', 0, 42, true, ['google'], { p: 'google' }]) {
+    const payload = prov === undefined ? {} : { prov };
+    const token = jwt.sign(payload, keys.privateKeyPem, {
+      algorithm: 'ES256', issuer: 'realm', audience: 'realm:livekit-mint',
+      subject: 'user-x', expiresIn: 3600,
+    });
+    mintCalls.length = 0;
+    const res = await post(enforcing.base, '/livekit-token', {
+      body: { roomName: 'any_room' },
+      headers: { authorization: `Bearer ${token}` },
+    });
+    assert.equal(res.status, 403, `prov=${JSON.stringify(prov)} must be refused`);
+    assert.deepEqual(mintCalls, [], `prov=${JSON.stringify(prov)} must not reach the minter`);
+  }
 });
 
 test('enforcing: an invalid credential is still 401, not 403', async () => {
@@ -144,6 +174,32 @@ test('permissive (the default): an anonymous principal still mints → 200', asy
 // ---------------------------------------------------------------------------
 // The env parse fails closed on anything it does not recognise.
 // ---------------------------------------------------------------------------
+
+test('the createApp default is off when the option is OMITTED, not just passed false', async () => {
+  // Raised by Tesla on PR #6: the permissive case was only ever tested with an
+  // explicit `{refuseAnonymous: false}`. Flip createApp's default parameter to
+  // `true` and that test still smiles while every deployment that never sets the
+  // option starts refusing guests. Pin the default itself.
+  const token = await credentialFor(omitted.base, 'anon');
+  const res = await post(omitted.base, '/livekit-token', {
+    body: { roomName: 'any_room' },
+    headers: { authorization: `Bearer ${token}` },
+  });
+  assert.equal(res.status, 200);
+});
+
+test('a STRING "false" does not enable enforcement (truthiness trap)', async () => {
+  // "false" is truthy. An entrypoint passing process.env through raw would enforce
+  // in the dark while its operator believed the switch was off — the 3am boot Tesla
+  // named: "I set it to false and guests vanished." The handler gates on === true,
+  // so the only way to enable it is an actual boolean.
+  const token = await credentialFor(stringy.base, 'anon');
+  const res = await post(stringy.base, '/livekit-token', {
+    body: { roomName: 'any_room' },
+    headers: { authorization: `Bearer ${token}` },
+  });
+  assert.equal(res.status, 200);
+});
 
 test('resolveRefuseAnonymous: unset → false (off by default)', () => {
   assert.equal(resolveRefuseAnonymous({}), false);

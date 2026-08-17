@@ -250,8 +250,10 @@ distributed attack.
 
 It is also **not** authorization. `/livekit-token` still mints a token for any
 `roomName` to any holder of a valid credential; admission control does not exist
-yet (claude-tasks#2850). `REALM_REFUSE_ANONYMOUS` narrows *who holds a
-credential*, not *which rooms they may name*.
+yet (claude-tasks#2850). `REALM_REFUSE_ANONYMOUS` narrows *who may use a
+credential at the mint*, not *which rooms they may name* — `/exchange` still
+issues credentials to anonymous principals; they are refused at
+`/livekit-token`.
 
 ## Contract parity
 

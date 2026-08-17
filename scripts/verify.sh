@@ -139,6 +139,24 @@ check 'the healthcheck still passes while a caller is throttled' 200 "$(status "
 check 'the request log reports whether the client IP came via a proxy' 1 \
   "$(grep -c '"proxied":false' "$LOG" >/dev/null && echo 1 || echo 0)"
 
+# A boot-time refusal only counts if it happens to a REAL process. The unit suite
+# can assert resolveRefuseAnonymous throws; only this loop can assert that the
+# throw actually reaches `npm start` and stops the container coming up. Raised by
+# Tesla on PR #6: the new throw is exactly the class this script exists for, and
+# without this check the first bad value would be discovered by a real deploy.
+#
+# Runs on its own port so it cannot collide with the server still under test above.
+BOOT_LOG=$(mktemp)
+if REALM_REFUSE_ANONYMOUS=yes PORT=$((PORT + 1)) timeout 10 npm start >"$BOOT_LOG" 2>&1; then
+  check 'a bad REALM_REFUSE_ANONYMOUS refuses to boot' 'refused' 'booted anyway'
+else
+  # Non-zero exit is the pass. Also assert it said WHY — a service that dies
+  # silently on a typo is indistinguishable from one that crashed.
+  check 'a bad REALM_REFUSE_ANONYMOUS refuses to boot' 1 \
+    "$(grep -c 'REALM_REFUSE_ANONYMOUS' "$BOOT_LOG" >/dev/null && echo 1 || echo 0)"
+fi
+rm -f "$BOOT_LOG"
+
 echo
 if [ "$failures" -eq 0 ]; then
   echo "all checks passed"

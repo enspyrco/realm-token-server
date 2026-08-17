@@ -1,4 +1,5 @@
 import admin from 'firebase-admin';
+import { ANONYMOUS_PROVIDER } from './providers.js';
 
 // Provider-native ID-token verification via the Firebase Admin SDK. This is the
 // external dependency the whole "Node, not Dart" decision turned on — verifying
@@ -25,13 +26,20 @@ function ensureApp() {
 
 // Maps Firebase's sign_in_provider to a Realm AuthProviderId wire string
 // (must match packages/realm AuthProviderId constants).
-function mapProvider(signInProvider) {
+//
+// EXPORTED so the anonymous arm can be pinned by a test. mint.js's
+// REALM_REFUSE_ANONYMOUS switch compares against ANONYMOUS_PROVIDER; if this
+// mapper ever emitted a different string for an anonymous sign-in, that switch
+// would silently become a placebo — green in tests, open in production. The
+// shared constant plus a pinning test makes that drift impossible rather than
+// merely commented against.
+export function mapProvider(signInProvider) {
   switch (signInProvider) {
     case 'google.com': return 'google';
     case 'apple.com': return 'apple';
     case 'github.com': return 'github';
     case 'password': return 'email_password';
-    case 'anonymous': return 'anonymous';
+    case 'anonymous': return ANONYMOUS_PROVIDER;
     default: return 'firebase';
   }
 }

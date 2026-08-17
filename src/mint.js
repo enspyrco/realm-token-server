@@ -1,8 +1,6 @@
 import { verifyRealmCredential, RealmCredentialRejected } from './realmCredential.js';
 
-// The wire value Firebase's `anonymous` sign-in provider maps to (see
-// mapProvider in firebase.js). Anything else is a principal that signed in.
-const ANONYMOUS_PROVIDER = 'anonymous';
+import { ANONYMOUS_PROVIDER } from './providers.js';
 
 /**
  * Reads the deployment-wide anonymous-refusal switch. Unset means OFF, which
@@ -55,11 +53,21 @@ export function makeMintHandler({ publicKeyPem, mintLiveKitToken, refuseAnonymou
     // credential still gets 401 and never learns this policy exists.
     //
     // Positive form: admit only a principal that can PROVE it is not anonymous.
-    // A credential with no `prov` claim is refused, because "not known to be
-    // anonymous" is a denylist and this must not become one.
-    if (refuseAnonymous) {
+    //
+    // `!== undefined` alone would NOT be that — it is a two-value denylist wearing
+    // a positive robe, under which null, '', 0 and any non-string all pass as
+    // "proven". The proof required is a NON-EMPTY STRING that is not the sentinel,
+    // so a future signer emitting `prov: null` (or a number, or nothing) is refused
+    // rather than admitted by a type the check never considered.
+    //
+    // `=== true` on the flag, not truthiness: the string "false" is truthy, and an
+    // entrypoint that passed process.env through raw would otherwise enforce in the
+    // dark while its operator believed it was off.
+    if (refuseAnonymous === true) {
       const provenNonAnonymous =
-        claims.provider !== undefined && claims.provider !== ANONYMOUS_PROVIDER;
+        typeof claims.provider === 'string'
+        && claims.provider.length > 0
+        && claims.provider !== ANONYMOUS_PROVIDER;
       if (!provenNonAnonymous) {
         return res.status(403).json({ error: 'anonymous principals are not admitted' });
       }
