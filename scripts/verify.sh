@@ -147,12 +147,26 @@ check 'the request log reports whether the client IP came via a proxy' 1 \
 #
 # Runs on its own port so it cannot collide with the server still under test above.
 BOOT_LOG=$(mktemp)
-if REALM_REFUSE_ANONYMOUS=yes PORT=$((PORT + 1)) timeout 10 npm start >"$BOOT_LOG" 2>&1; then
-  check 'a bad REALM_REFUSE_ANONYMOUS refuses to boot' 'refused' 'booted anyway'
+set +e
+REALM_REFUSE_ANONYMOUS=yes PORT=$((PORT + 1)) timeout 10 npm start >"$BOOT_LOG" 2>&1
+BOOT_RC=$?
+set -e
+
+# Assert the CORPSE, not a substring in a log. Three distinct outcomes, and only
+# one is a pass (Tesla, PR #6: "you measured a substring, not a corpse"):
+#   0   -> it booted and exited cleanly. Not a refusal.
+#   124 -> `timeout` killed it, meaning it was still SERVING. Log-the-error-and-
+#          listen-anyway is the false green this check exists to prevent.
+#   else-> it died on its own, which is the refusal we want.
+if [ "$BOOT_RC" -eq 124 ]; then
+  check 'a bad REALM_REFUSE_ANONYMOUS refuses to boot' 'died' 'still serving after 10s'
+elif [ "$BOOT_RC" -eq 0 ]; then
+  check 'a bad REALM_REFUSE_ANONYMOUS refuses to boot' 'died' 'exited 0 without refusing'
 else
-  # Non-zero exit is the pass. Also assert it said WHY — a service that dies
-  # silently on a typo is indistinguishable from one that crashed.
-  check 'a bad REALM_REFUSE_ANONYMOUS refuses to boot' 1 \
+  check 'a bad REALM_REFUSE_ANONYMOUS refuses to boot' 'died' 'died'
+  # And it must say WHY: a service that dies silently on a typo is
+  # indistinguishable from one that crashed for an unrelated reason.
+  check 'the boot refusal names the variable' 1 \
     "$(grep -c 'REALM_REFUSE_ANONYMOUS' "$BOOT_LOG" >/dev/null && echo 1 || echo 0)"
 fi
 rm -f "$BOOT_LOG"

@@ -1,6 +1,6 @@
 import { verifyRealmCredential, RealmCredentialRejected } from './realmCredential.js';
 
-import { ANONYMOUS_PROVIDER } from './providers.js';
+import { SIGNED_IN_PROVIDERS } from './providers.js';
 
 /**
  * Reads the deployment-wide anonymous-refusal switch. Unset means OFF, which
@@ -32,6 +32,18 @@ export function resolveRefuseAnonymous(env) {
 // throwaway-uid caller, not the arbitrary-room capability. It is superseded by
 // per-room `permissions.allowAnonymous` once the engine ships it.
 export function makeMintHandler({ publicKeyPem, mintLiveKitToken, refuseAnonymous = false }) {
+  // Reject a non-boolean at CONSTRUCTION rather than coercing at request time.
+  // Gating on `=== true` alone is safe against the string "false" (truthy, would
+  // have enforced in the dark) but silently permissive against the string "true" —
+  // the complementary 3am, "I set it to true and nothing happened" (Tesla, PR #6).
+  // Neither direction should be guessed: a caller that hands this a string has a
+  // wiring bug, and a wiring bug in a security switch must be loud.
+  if (typeof refuseAnonymous !== 'boolean') {
+    throw new TypeError(
+      `makeMintHandler: refuseAnonymous must be a boolean, got ${typeof refuseAnonymous} `
+      + `(${JSON.stringify(refuseAnonymous)}) — resolve it via appOptionsFromEnv, not raw env`,
+    );
+  }
   return async function mint(req, res) {
     const auth = req.get('authorization') || '';
     const match = /^Bearer (.+)$/.exec(auth);
@@ -52,25 +64,17 @@ export function makeMintHandler({ publicKeyPem, mintLiveKitToken, refuseAnonymou
     // Authorization, decided only after authentication succeeded — so a forged
     // credential still gets 401 and never learns this policy exists.
     //
-    // Positive form: admit only a principal that can PROVE it is not anonymous.
+    // Positive form: admit only a principal whose provider is PROOF that it signed
+    // in. Membership in SIGNED_IN_PROVIDERS is the whole test.
     //
-    // `!== undefined` alone would NOT be that — it is a two-value denylist wearing
-    // a positive robe, under which null, '', 0 and any non-string all pass as
-    // "proven". The proof required is a NON-EMPTY STRING that is not the sentinel,
-    // so a future signer emitting `prov: null` (or a number, or nothing) is refused
-    // rather than admitted by a type the check never considered.
-    //
-    // `=== true` on the flag, not truthiness: the string "false" is truthy, and an
-    // entrypoint that passed process.env through raw would otherwise enforce in the
-    // dark while its operator believed it was off.
-    if (refuseAnonymous === true) {
-      const provenNonAnonymous =
-        typeof claims.provider === 'string'
-        && claims.provider.length > 0
-        && claims.provider !== ANONYMOUS_PROVIDER;
-      if (!provenNonAnonymous) {
-        return res.status(403).json({ error: 'anonymous principals are not admitted' });
-      }
+    // Two weaker forms were tried on this PR and both were denylists in disguise:
+    // `!== undefined` admitted null/''/0/non-strings, and "a non-empty string that
+    // is not the sentinel" admitted `'firebase'` — which is exactly what
+    // mapProvider returns for a MISSING or unrecognised sign_in_provider, so
+    // absence of evidence was reading as evidence. An allowlist cannot fail that
+    // way: an unknown provider is simply not in the set.
+    if (refuseAnonymous === true && !SIGNED_IN_PROVIDERS.has(claims.provider)) {
+      return res.status(403).json({ error: 'anonymous principals are not admitted' });
     }
 
     const roomName = req.body?.roomName;

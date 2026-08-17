@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import { appOptionsFromEnv } from '../src/config.js';
 import { mapProvider } from '../src/firebase.js';
-import { ANONYMOUS_PROVIDER } from '../src/providers.js';
+import { ANONYMOUS_PROVIDER, SIGNED_IN_PROVIDERS } from '../src/providers.js';
 
 // Raised by CarnotCodeCarver on PR #6: the env resolvers were tested and the
 // handlers were tested with options injected, but nothing tested that a resolver's
@@ -65,10 +65,33 @@ test("mapProvider pins Firebase's anonymous sign-in to ANONYMOUS_PROVIDER", () =
   // REALM_REFUSE_ANONYMOUS would become a placebo — green here, open in production.
   // Both sides now read one constant, and this test fails if they ever diverge.
   assert.equal(mapProvider('anonymous'), ANONYMOUS_PROVIDER);
+  assert.ok(!SIGNED_IN_PROVIDERS.has(mapProvider('anonymous')));
 });
 
-test('mapProvider does not map a signed-in provider onto the anonymous sentinel', () => {
-  for (const p of ['google.com', 'apple.com', 'github.com', 'password', 'something.new']) {
-    assert.notEqual(mapProvider(p), ANONYMOUS_PROVIDER, `${p} must not read as anonymous`);
+test('every KNOWN sign-in method maps to something the mint accepts as proof', () => {
+  for (const p of ['google.com', 'apple.com', 'github.com', 'password']) {
+    assert.ok(
+      SIGNED_IN_PROVIDERS.has(mapProvider(p)),
+      `${p} is a real sign-in and must be admissible under enforcement`,
+    );
   }
+});
+
+test('an UNKNOWN sign_in_provider is NOT proof of signing in', () => {
+  // The round-2 fail-open, found independently by Carnot and Tesla, and the
+  // previous version of this test canonized it: it asserted only that an unknown
+  // provider was "not anonymous", which is exactly the denylist reasoning that let
+  // the mapper's `default: 'firebase'` fallback read as proof.
+  //
+  // The important problem is PROOF, not string drift. Absence of evidence about how
+  // someone signed in must not become evidence that they did.
+  for (const p of ['something.new', undefined, '', 'phone']) {
+    assert.ok(
+      !SIGNED_IN_PROVIDERS.has(mapProvider(p)),
+      `${JSON.stringify(p)} must not be admissible — it is an unknown sign-in method`,
+    );
+  }
+  // Specifically the fallback string itself.
+  assert.equal(mapProvider(undefined), 'firebase');
+  assert.ok(!SIGNED_IN_PROVIDERS.has('firebase'), "'firebase' means 'we don't know', not 'signed in'");
 });

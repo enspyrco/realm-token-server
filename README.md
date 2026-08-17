@@ -54,10 +54,21 @@ admission decision.
 ### `REALM_REFUSE_ANONYMOUS` — a risk trim, not the fix
 
 Step 0 of that design, and the only part of it that exists today. Set it to
-`true` and `/livekit-token` refuses any credential whose `prov` is `anonymous`
-with a **403**. Unset (the default) is off and behaviour-identical; any value
+`true` and `/livekit-token` admits **only** a credential whose `prov` is a known
+signed-in provider (`SIGNED_IN_PROVIDERS` in `src/providers.js`); everything else
+gets a **403**. Unset (the default) is off and behaviour-identical; any value
 other than exactly `true`/`false` makes the service **refuse to start** rather
 than be silently read as off.
+
+It is an **allowlist, not a check for `prov == "anonymous"`** — and the
+distinction is load-bearing, not pedantry. `mapProvider` returns the string
+`"firebase"` for any *missing or unrecognised* `sign_in_provider`, which is
+neither empty nor the anonymous sentinel; under a "not anonymous" rule that
+fallback reads as proof of having signed in, so a token with no
+`sign_in_provider` would be admitted. Absence of evidence must not become
+evidence. Adding a new sign-in method therefore means adding a `mapProvider`
+case **and** a `SIGNED_IN_PROVIDERS` entry — until both land, that method's users
+are refused while the switch is on.
 
 Be precise about what this does and does not do:
 

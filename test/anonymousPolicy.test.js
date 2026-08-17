@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import { createApp } from '../src/server.js';
 import { resolveRefuseAnonymous } from '../src/mint.js';
+import { appOptionsFromEnv } from '../src/config.js';
 import { es256Keys } from './helpers.js';
 
 // Step 0 of docs/crucible/room-admission/DESIGN.md — the deployment-wide refusal
@@ -18,6 +19,10 @@ const keys = es256Keys();
 async function fakeVerify(idToken) {
   if (idToken === 'google') return { uid: 'user-1', provider: 'google' };
   if (idToken === 'anon') return { uid: 'guest-1', provider: 'anonymous' };
+  // What mapProvider actually returns for a MISSING or unrecognised
+  // sign_in_provider (src/firebase.js `default` arm). This is a real production
+  // path, not a synthetic one.
+  if (idToken === 'unknown') return { uid: 'user-9', provider: 'firebase' };
   throw new Error('bad token');
 }
 // Records every invocation. A refused request must never reach the minter at all:
@@ -64,16 +69,19 @@ async function credentialFor(base, idToken) {
 
 let enforcing;
 let permissive;
-let omitted;   // the key absent entirely — the real production default path
-let stringy;   // refuseAnonymous: "false", the truthiness trap
+let omitted;    // the key absent entirely — the real production default path
+let fromEnv;    // built the way index.js builds it: env string -> options -> app
 
 before(async () => {
   enforcing = await makeServer({ refuseAnonymous: true });
   permissive = await makeServer({ refuseAnonymous: false });
   omitted = await makeServer({});
-  stringy = await makeServer({ refuseAnonymous: 'false' });
+  fromEnv = await makeServer(appOptionsFromEnv({
+    REALM_REFUSE_ANONYMOUS: 'true',
+    CORS_ALLOWED_ORIGINS: 'https://example.test',
+  }));
 });
-after(() => Promise.all([enforcing, permissive, omitted, stringy].map(
+after(() => Promise.all([enforcing, permissive, omitted, fromEnv].map(
   (s) => new Promise((r) => s.server.close(r)),
 )));
 
@@ -97,6 +105,36 @@ test('enforcing: an anonymous principal is refused at the mint → 403, and NO t
   // go re-authenticate, which would not help.
   const body = await res.json();
   assert.match(body.error, /anonymous/i);
+});
+
+test("enforcing: an UNKNOWN provider ('firebase') is refused → 403", async () => {
+  // The round-2 fail-open, found independently by Carnot and Tesla. mapProvider
+  // returns 'firebase' for any missing or unrecognised sign_in_provider — a
+  // non-empty string that is not the anonymous sentinel. Under the previous
+  // "not the sentinel" rule it was ADMITTED, so a token with no sign_in_provider
+  // walked through a switch whose whole job was to require proof.
+  //
+  // Delete SIGNED_IN_PROVIDERS and fall back to a not-the-sentinel check, and this
+  // test goes red. That is the point of it.
+  const token = await credentialFor(enforcing.base, 'unknown');
+  mintCalls.length = 0;
+  const res = await post(enforcing.base, '/livekit-token', {
+    body: { roomName: 'any_room' },
+    headers: { authorization: `Bearer ${token}` },
+  });
+  assert.equal(res.status, 403);
+  assert.deepEqual(mintCalls, []);
+});
+
+test('permissive: an unknown provider is unaffected when the switch is off → 200', async () => {
+  // The allowlist must not leak into the default path — it is only proof-of-signin
+  // under enforcement, never a general admission rule.
+  const token = await credentialFor(permissive.base, 'unknown');
+  const res = await post(permissive.base, '/livekit-token', {
+    body: { roomName: 'any_room' },
+    headers: { authorization: `Bearer ${token}` },
+  });
+  assert.equal(res.status, 200);
 });
 
 test('enforcing: a signed-in principal is unaffected → 200', async () => {
@@ -188,13 +226,54 @@ test('the createApp default is off when the option is OMITTED, not just passed f
   assert.equal(res.status, 200);
 });
 
-test('a STRING "false" does not enable enforcement (truthiness trap)', async () => {
-  // "false" is truthy. An entrypoint passing process.env through raw would enforce
-  // in the dark while its operator believed the switch was off — the 3am boot Tesla
-  // named: "I set it to false and guests vanished." The handler gates on === true,
-  // so the only way to enable it is an actual boolean.
-  const token = await credentialFor(stringy.base, 'anon');
-  const res = await post(stringy.base, '/livekit-token', {
+test('a NON-BOOLEAN refuseAnonymous is refused at construction, not coerced', async () => {
+  // Both string directions are traps and neither should be guessed: "false" is
+  // truthy (would enforce in the dark), and "true" would be silently ignored under
+  // a `=== true` gate (would NOT enforce while the operator believed it did).
+  // Tesla named both 3am postmortems on PR #6. A caller handing this a string has a
+  // wiring bug, and a wiring bug in a security switch must be loud.
+  // Asserted against createApp, NOT makeServer: createApp constructs the handler
+  // (where the throw lives) without opening a socket. An earlier version called
+  // makeServer here, so when the guard was mutated away the loop leaked a listening
+  // server per iteration and the whole runner HUNG instead of failing — a test that
+  // cannot go red cleanly is a test that cannot red-prove its own fix.
+  for (const bad of ['true', 'false', 1, 0, null]) {
+    assert.throws(
+      () => createApp({
+        verifyProviderIdToken: fakeVerify,
+        privateKeyPem: keys.privateKeyPem,
+        publicKeyPem: keys.publicKeyPem,
+        mintLiveKitToken: fakeMint,
+        allowedOrigins: [],
+        refuseAnonymous: bad,
+      }),
+      /refuseAnonymous must be a boolean/,
+      `${JSON.stringify(bad)} must be refused, not coerced`,
+    );
+  }
+});
+
+test('the env string reaches the handler: REALM_REFUSE_ANONYMOUS=true → 403 over HTTP', async () => {
+  // Closes the last unbound link Tesla named: every enforcement test injected a
+  // boolean directly, so an index.js that CALLED resolveRefuseAnonymous (keeping
+  // the boot-refusal green) and then discarded the result would leave the unit
+  // suite and verify.sh both green with production permissive.
+  //
+  // This builds the app exactly as index.js does — raw env string through
+  // appOptionsFromEnv into createApp — and asserts the behaviour at the wire.
+  const token = await credentialFor(fromEnv.base, 'anon');
+  mintCalls.length = 0;
+  const res = await post(fromEnv.base, '/livekit-token', {
+    body: { roomName: 'any_room' },
+    headers: { authorization: `Bearer ${token}` },
+  });
+  assert.equal(res.status, 403);
+  assert.deepEqual(mintCalls, []);
+});
+
+test('the env string reaches the handler: a signed-in principal still mints → 200', async () => {
+  const token = await credentialFor(fromEnv.base, 'google');
+  const res = await post(fromEnv.base, '/livekit-token', {
     body: { roomName: 'any_room' },
     headers: { authorization: `Bearer ${token}` },
   });
