@@ -58,8 +58,11 @@ Step 0 of that design, and the only part of it that exists today. Set it to
 signed-in provider (`SIGNED_IN_PROVIDERS` in `src/providers.js`); any other
 *valid* credential gets a **403**.
 
-An **invalid** credential — missing, forged, expired, malformed — still gets a
-**401**, exactly as before and *before* this policy is consulted. So the 403 is
+An **unauthenticated** request — no bearer header, a forged signature, an expired
+or malformed credential — still gets a **401**, exactly as before and *before*
+this policy is consulted. ("Missing" here means a missing *credential*; a valid
+credential with a missing `prov` claim is authenticated, so it reaches the policy
+and gets the 403.) So the 403 is
 not "everything else"; it is specifically *"you are who you say you are, and
 that is not enough."*
 
@@ -86,8 +89,11 @@ are refused while the switch is on.
 
 Be precise about what this does and does not do:
 
-- **Does:** removes the throwaway-uid caller. A fresh anonymous Firebase uid can
-  no longer walk into rooms by typing a name.
+- **Does, once a deployment sets it to `true`:** removes the throwaway-uid
+  caller. A fresh anonymous Firebase uid can no longer walk into rooms by typing
+  a name. **Merging this changes nothing on any box** — the default is off, so
+  until someone sets the variable the guest path is exactly as open as it was.
+  The lock ships in the crate.
 - **Does not:** stop *any signed-in user* from requesting *any* room. That is
   the actual bug, and it is closed by the engine-side admission predicate
   (step 2), not here.
