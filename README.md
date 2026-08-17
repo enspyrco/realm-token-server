@@ -55,8 +55,16 @@ admission decision.
 
 Step 0 of that design, and the only part of it that exists today. Set it to
 `true` and `/livekit-token` admits **only** a credential whose `prov` is a known
-signed-in provider (`SIGNED_IN_PROVIDERS` in `src/providers.js`); everything else
-gets a **403**. Unset (the default) is off and behaviour-identical; any value
+signed-in provider (`SIGNED_IN_PROVIDERS` in `src/providers.js`); any other
+*valid* credential gets a **403**.
+
+An **invalid** credential — missing, forged, expired, malformed — still gets a
+**401**, exactly as before and *before* this policy is consulted. That ordering
+is deliberate: an unauthenticated caller never learns the policy exists. So the
+403 is not "everything else"; it is specifically *"you are who you say you are,
+and that is not enough."*
+
+Unset (the default) is off and behaviour-identical; any value
 other than exactly `true`/`false` makes the service **refuse to start** rather
 than be silently read as off.
 

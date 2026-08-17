@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import { appOptionsFromEnv } from '../src/config.js';
 import { mapProvider } from '../src/firebase.js';
-import { ANONYMOUS_PROVIDER, SIGNED_IN_PROVIDERS } from '../src/providers.js';
+import { ANONYMOUS_PROVIDER, isSignedInProvider } from '../src/providers.js';
 
 // Raised by CarnotCodeCarver on PR #6: the env resolvers were tested and the
 // handlers were tested with options injected, but nothing tested that a resolver's
@@ -65,13 +65,13 @@ test("mapProvider pins Firebase's anonymous sign-in to ANONYMOUS_PROVIDER", () =
   // REALM_REFUSE_ANONYMOUS would become a placebo — green here, open in production.
   // Both sides now read one constant, and this test fails if they ever diverge.
   assert.equal(mapProvider('anonymous'), ANONYMOUS_PROVIDER);
-  assert.ok(!SIGNED_IN_PROVIDERS.has(mapProvider('anonymous')));
+  assert.ok(!isSignedInProvider(mapProvider('anonymous')));
 });
 
 test('every KNOWN sign-in method maps to something the mint accepts as proof', () => {
   for (const p of ['google.com', 'apple.com', 'github.com', 'password']) {
     assert.ok(
-      SIGNED_IN_PROVIDERS.has(mapProvider(p)),
+      isSignedInProvider(mapProvider(p)),
       `${p} is a real sign-in and must be admissible under enforcement`,
     );
   }
@@ -87,11 +87,11 @@ test('an UNKNOWN sign_in_provider is NOT proof of signing in', () => {
   // someone signed in must not become evidence that they did.
   for (const p of ['something.new', undefined, '', 'phone']) {
     assert.ok(
-      !SIGNED_IN_PROVIDERS.has(mapProvider(p)),
+      !isSignedInProvider(mapProvider(p)),
       `${JSON.stringify(p)} must not be admissible — it is an unknown sign-in method`,
     );
   }
   // Specifically the fallback string itself.
   assert.equal(mapProvider(undefined), 'firebase');
-  assert.ok(!SIGNED_IN_PROVIDERS.has('firebase'), "'firebase' means 'we don't know', not 'signed in'");
+  assert.ok(!isSignedInProvider('firebase'), "'firebase' means 'we don't know', not 'signed in'");
 });

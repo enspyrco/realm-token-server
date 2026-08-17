@@ -1,6 +1,6 @@
 import { verifyRealmCredential, RealmCredentialRejected } from './realmCredential.js';
 
-import { SIGNED_IN_PROVIDERS } from './providers.js';
+import { isSignedInProvider } from './providers.js';
 
 /**
  * Reads the deployment-wide anonymous-refusal switch. Unset means OFF, which
@@ -73,7 +73,7 @@ export function makeMintHandler({ publicKeyPem, mintLiveKitToken, refuseAnonymou
     // mapProvider returns for a MISSING or unrecognised sign_in_provider, so
     // absence of evidence was reading as evidence. An allowlist cannot fail that
     // way: an unknown provider is simply not in the set.
-    if (refuseAnonymous === true && !SIGNED_IN_PROVIDERS.has(claims.provider)) {
+    if (refuseAnonymous === true && !isSignedInProvider(claims.provider)) {
       return res.status(403).json({ error: 'anonymous principals are not admitted' });
     }
 

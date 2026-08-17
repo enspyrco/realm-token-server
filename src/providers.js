@@ -32,9 +32,31 @@ export const ANONYMOUS_PROVIDER = 'anonymous';
  * silently admits an unrecognised sign-in method is the failure worth avoiding; an
  * opt-in switch that refuses one is a loud, fixable inconvenience.
  */
-export const SIGNED_IN_PROVIDERS = Object.freeze(new Set([
+export const SIGNED_IN_PROVIDERS = Object.freeze([
   'google',
   'apple',
   'github',
   'email_password',
-]));
+]);
+
+// The lookup set is module-PRIVATE and the predicate is the only way in.
+//
+// `Object.freeze(new Set([...]))` — the obvious spelling, and what this file
+// shipped for one review round — freezes the bottle, not the lightning: freeze
+// does not touch a Set's internal [[SetData]], so `SIGNED_IN_PROVIDERS.add(...)`
+// still mutates admission process-wide for the life of the isolate. A debug
+// import or a "temporary" test helper could grow the allowlist in the only
+// direction that matters. Tesla caught this on PR #6.
+//
+// The exported array IS genuinely frozen (ESM modules are strict mode, so a
+// mutating call throws), and it exists so tests can enumerate the set.
+const SIGNED_IN = new Set(SIGNED_IN_PROVIDERS);
+
+/**
+ * The admission predicate. True only for a provider that is PROOF the principal
+ * signed in — never for the anonymous sentinel, never for the `'firebase'`
+ * don't-know fallback, and never for a value of any other type.
+ */
+export function isSignedInProvider(provider) {
+  return SIGNED_IN.has(provider);
+}

@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { createApp } from '../src/server.js';
 import { resolveRefuseAnonymous } from '../src/mint.js';
 import { appOptionsFromEnv } from '../src/config.js';
+import { SIGNED_IN_PROVIDERS, isSignedInProvider } from '../src/providers.js';
 import { es256Keys } from './helpers.js';
 
 // Step 0 of docs/crucible/room-admission/DESIGN.md — the deployment-wide refusal
@@ -124,6 +125,61 @@ test("enforcing: an UNKNOWN provider ('firebase') is refused → 403", async () 
   });
   assert.equal(res.status, 403);
   assert.deepEqual(mintCalls, []);
+});
+
+test('enforcing: ANY provider outside the set is refused, not just the known villains → 403', async () => {
+  // The law, not the last autopsy. Tesla, PR #6 round 3: every enforcement test so
+  // far named a specific refusee (anonymous, firebase, and eight non-string
+  // shapes), so a guard rewritten as
+  //     provider === 'anonymous' || provider === 'firebase' || typeof provider !== 'string'
+  // keeps all of them green while 'phone', 'custom' and 'Google' mint a token and
+  // dispatch agents. Nine specimens is still a denylist if none of them is an
+  // ORDINARY STRING THAT SIMPLY ISN'T IN THE SET.
+  //
+  // 'Google' and 'password' are the cruel ones: the first is a case variant of a
+  // real member, the second is Firebase's OWN wire string for email/password
+  // (which maps to 'email_password'), so both look admissible to a careless reader.
+  const jwt = (await import('jsonwebtoken')).default;
+  for (const prov of ['phone', 'custom', 'Google', 'GOOGLE', 'password', 'oidc.okta', 'firebase ']) {
+    const token = jwt.sign({ prov }, keys.privateKeyPem, {
+      algorithm: 'ES256', issuer: 'realm', audience: 'realm:livekit-mint',
+      subject: 'user-x', expiresIn: 3600,
+    });
+    mintCalls.length = 0;
+    const res = await post(enforcing.base, '/livekit-token', {
+      body: { roomName: 'any_room' },
+      headers: { authorization: `Bearer ${token}` },
+    });
+    assert.equal(res.status, 403, `prov=${JSON.stringify(prov)} is not in the set and must be refused`);
+    assert.deepEqual(mintCalls, [], `prov=${JSON.stringify(prov)} must not reach the minter`);
+  }
+});
+
+test('enforcing: EVERY member of the allowlist is admitted at the wire → 200', async () => {
+  // The admit path was HTTP-proven only for 'google'; apple, github and
+  // email_password were blessed solely by the mapper→set seam, which does not
+  // prove the mint reads the set. Inline `claims.provider === 'google'` and the
+  // suite would still have smiled (Tesla, PR #6 round 3).
+  const jwt = (await import('jsonwebtoken')).default;
+  for (const prov of SIGNED_IN_PROVIDERS) {
+    const token = jwt.sign({ prov }, keys.privateKeyPem, {
+      algorithm: 'ES256', issuer: 'realm', audience: 'realm:livekit-mint',
+      subject: `user-${prov}`, expiresIn: 3600,
+    });
+    const res = await post(enforcing.base, '/livekit-token', {
+      body: { roomName: 'any_room' },
+      headers: { authorization: `Bearer ${token}` },
+    });
+    assert.equal(res.status, 200, `${prov} is a real sign-in and must be admitted`);
+  }
+});
+
+test('the allowlist cannot be grown at runtime', async () => {
+  // Object.freeze(new Set(...)) would NOT have prevented this — freeze does not
+  // touch a Set's internal [[SetData]]. The exported array is genuinely frozen and
+  // the lookup Set is module-private behind isSignedInProvider.
+  assert.throws(() => { SIGNED_IN_PROVIDERS.push('firebase'); }, TypeError);
+  assert.ok(!isSignedInProvider('firebase'), 'the don\'t-know fallback must stay out');
 });
 
 test('permissive: an unknown provider is unaffected when the switch is off → 200', async () => {
