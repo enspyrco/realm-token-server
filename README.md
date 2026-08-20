@@ -265,13 +265,58 @@ closed only *partially* elsewhere — state the boundary exactly:
   `docker-compose.yml` publishes it as `127.0.0.1:8791:8080`, so the only route
   in from outside the box is through Caddy — which is the one hop `trust proxy`
   is set for. The cap of 1 keeps it that way.
-- **From inside the box: open, and accepted.** Anything that can already reach
-  the container's `:8080` directly — a sibling service on the docker network, a
-  process on the host — is trusted as the proxy and may name its own client
-  address, dissolving the per-IP layer for itself. The service-wide ceiling still
-  holds. This is accepted rather than solved: a caller with that position already
-  shares a host with the ES256 signing key. Narrowing `trust proxy` from a hop
-  count to the gateway address would close it (claude-tasks#3190).
+- **From inside the box: open unless `REALM_TRUSTED_PROXY_SECRET` is set.** Any
+  process on the host can reach the published `127.0.0.1:8791`, forge
+  `X-Forwarded-For`, and be believed — dissolving the per-IP layer for itself.
+  The service-wide ceiling still holds. Confirmed in production 2026-08-20: a
+  `curl` on the box with a forged header logged `proxied: true`.
+
+  **An address cannot fix this, and an earlier version of this section said it
+  could.** Caddy runs `network_mode: host`, so it is not on the docker network at
+  all — it reaches the container through the same published port as every other
+  host process, arriving from the same bridge gateway. `realm-token-server_default`
+  also has exactly one container, so the "sibling service on the docker network"
+  this paragraph used to describe does not exist. `trust proxy` set to the gateway
+  address would trust precisely the same callers as `trust proxy: 1`, while
+  reading as though it had narrowed something.
+
+  The separation has to be **authentication, not location** — see
+  `REALM_TRUSTED_PROXY_SECRET` below. Note the exposure is narrower than "already
+  game over": only a **root or docker-group** process can read the ES256 key from
+  the container env, while *any* unprivileged local process can defeat the per-IP
+  limiter (claude-tasks#3190).
+
+### `REALM_TRUSTED_PROXY_SECRET` — authenticate the proxy
+
+Optional, and **unset is unenforced** — behaviour-identical to before it existed.
+
+When set, `X-Forwarded-For` is honoured only on requests presenting a matching
+`X-Realm-Proxy-Secret` header; on any other request the header is discarded and
+the limiter keys on the socket address, which the caller cannot choose. The
+secret header is stripped before the request reaches the logger either way.
+
+Caddy side:
+
+```
+reverse_proxy 127.0.0.1:8791 {
+    header_up -X-Realm-Proxy-Secret
+    header_up X-Realm-Proxy-Secret "<secret>"
+}
+```
+
+The leading `-` line is load-bearing. Caddy passes client headers through before
+applying `header_up`, so without the delete a client that merely *sends*
+`X-Realm-Proxy-Secret` can have both values arrive comma-joined — which never
+equals the secret, so that request fails closed onto the gateway bucket. Failing
+closed is correct; letting a caller *choose* it is not.
+
+At least 32 characters (`openssl rand -hex 32`), no surrounding whitespace, or
+the server refuses to boot. **Cutover is ordered, in both directions.** On: deploy → Caddy sends the header →
+set the secret. Off: unset the secret **first**, then remove it from Caddy. Either
+sequence reversed leaves the service enforcing while the proxy is silent, and every
+client keys on the gateway in one shared bucket. The boot `policy`
+log line reports `proxyAuth: "enforced" | "unenforced"` so the state is
+answerable without guessing.
 
 Raising the cap is a code change, not a config change, and that is on purpose:
 adding a second proxy alters who is allowed to name the client, which is not a
