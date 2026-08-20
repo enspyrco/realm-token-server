@@ -19,6 +19,14 @@ on:
       - '.env.example'
       - 'docs/**'
       - 'LICENSE'
+      # CI config is not image content — the Dockerfile copies package.json, the
+      # lockfile and src/, and nothing else. Without this line, adding a workflow
+      # fires a publish whose version is already taken, so the version guard below
+      # refuses and main goes red for a change that shipped no bytes.
+      #
+      # The cost, stated plainly: an edit to THIS file no longer triggers itself,
+      # so a publish change is first exercised by the next real code push.
+      - '.github/**'
       # The compose pin is DEPLOYMENT config, not image content. Bumping which
       # version the box runs must not try to republish that version — it already
       # exists, which is the whole point of pinning it.
