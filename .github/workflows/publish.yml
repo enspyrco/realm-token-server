@@ -10,27 +10,36 @@ name: publish
 on:
   push:
     branches: [main]
-    # Publishing is gated on an unused version tag, so a docs-only commit can
-    # never satisfy it — there is nothing shippable to bump the version FOR.
-    # Skip those rather than fail them; the guard should catch a forgotten bump
-    # on real code, not punish a README fix.
-    paths-ignore:
-      - '**.md'
-      - '.env.example'
-      - 'docs/**'
-      - 'LICENSE'
-      # CI config is not image content — the Dockerfile copies package.json, the
-      # lockfile and src/, and nothing else. Without this line, adding a workflow
-      # fires a publish whose version is already taken, so the version guard below
-      # refuses and main goes red for a change that shipped no bytes.
-      #
-      # The cost, stated plainly: an edit to THIS file no longer triggers itself,
-      # so a publish change is first exercised by the next real code push.
-      - '.github/**'
-      # The compose pin is DEPLOYMENT config, not image content. Bumping which
-      # version the box runs must not try to republish that version — it already
-      # exists, which is the whole point of pinning it.
-      - 'docker-compose.yml'
+    # Publish only when IMAGE CONTENT changed. Positively defined, because the
+    # denylist this replaced was wrong twice in one day: it started as "not
+    # markdown, not docs/", then needed '.github/**' when a workflow was added,
+    # and would have needed 'test/**' the very next PR. Each miss fires a publish
+    # for a version already in the registry, so the immutable-tag guard below
+    # refuses and main goes red for a change that shipped no bytes.
+    #
+    # A denylist of non-image paths can never be finished — every new top-level
+    # directory is another way to be wrong. This list is derivable instead: it is
+    # exactly what the Dockerfile COPYs, plus the Dockerfile itself.
+    # `test/dockerfileTriggerParity.test.js` fails if the two drift apart.
+    #
+    # Two consequences, both deliberate:
+    #   - An edit to THIS file no longer triggers itself; a publish change is
+    #     first exercised by the next real code push.
+    #   - It fails CLOSED. A new COPY line without a matching entry here means no
+    #     publish rather than a bad one — and the parity test turns that silence
+    #     into a red build, which is the whole reason it exists.
+    paths:
+      - 'src/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'Dockerfile'
+      # NOTE: docker-compose.yml is deliberately absent. It is DEPLOYMENT config —
+      # bumping which version the box runs must not republish that version, which
+      # already exists and is the whole point of pinning it. Under the old
+      # paths-ignore it needed an explicit entry to say that; under an allowlist
+      # it is excluded by construction, along with docs, tests, scripts and CI.
+      # Left as a note because "the compose pin must not trigger a build" is a
+      # real constraint that is now invisible in the list.
   workflow_dispatch:
 
 env:
