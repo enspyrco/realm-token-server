@@ -323,6 +323,11 @@ boots, middleware mounted in the wrong order, a header that never reaches the
 wire — and it is the loop to run *before* `git commit`, so review and CI are not
 doing verification's job at ten times the cost.
 
+Both also run on every pull request (`.github/workflows/test.yml`), as two
+independent jobs so a wire failure and a unit failure stay distinguishable. That
+is a backstop for the local loop, not a replacement for it: a check that first
+speaks after you have pushed has already let the expensive part happen.
+
 ## Deploy (OCI)
 
 Runs beside LiveKit + the bot as a Docker container. Secrets are injected as env

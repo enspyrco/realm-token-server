@@ -1,0 +1,55 @@
+name: test
+
+# Runs on the BRANCH, before a merge. `publish.yml` also has a test job, but it
+# triggers on push to main — so until this file existed the first thing to run
+# `npm test` was the workflow that also publishes the image, and a red test
+# landed on main rather than on the branch that broke it.
+#
+# Separate file rather than a `pull_request` trigger on publish.yml: that
+# workflow carries paths-ignore rules and a `needs: test` publish chain, and
+# neither should apply here. A docs-only change is exempt from PUBLISHING (there
+# is nothing to ship) but not from being tested — prose in this repo has steered
+# a code edit before.
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+# A force-push should not leave the previous run competing for a verdict.
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # In-process, with injected fakes.
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm test
+
+  # The real `npm start` entrypoint, asserted over HTTP. A separate job on
+  # purpose: sharing one with `unit` would abort before the unit result exists,
+  # reporting one bit where two were available.
+  #
+  # Needs no secrets. scripts/devenv.sh generates an ephemeral ES256 keypair per
+  # invocation and verifyIdToken requires only a project id, not a credential —
+  # so this runs unmodified on a runner.
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: ./scripts/verify.sh
