@@ -63,8 +63,11 @@ function matches(presented, secret) {
 /**
  * Authenticates the proxy rather than locating it.
  *
- * MUST be mounted before anything reads `req.ip` — express computes it lazily
- * from the headers as they stand when first accessed.
+ * MUST be mounted before the RATE LIMITERS — they read `req.ip` during the
+ * request, so a forwarding claim still standing at that point is what the
+ * per-IP bucket keys on. (Not "before the logger": requestLog reads req.ip on
+ * 'finish', after the response. See the mount site in server.js for the
+ * measurement that corrected this.)
  *
  * On a failed or absent presentation the request is served normally; only its
  * claim about who it is speaking for is discarded.
@@ -72,7 +75,12 @@ function matches(presented, secret) {
 export function makeProxyAuthMiddleware({ secret = null } = {}) {
   return function proxyAuth(req, _res, next) {
     const presented = req.headers[PROXY_SECRET_HEADER];
-    // Never let it reach a log, an error report, or an upstream request.
+    // Keep it out of anything downstream that walks req.headers — this service's
+    // request log, an error dump, a future outbound call.
+    // SCOPE: `delete` clears req.headers only. req.rawHeaders (and Node's
+    // headersDistinct) still hold the value; nothing here reads either, but
+    // "never reaches a log" would overclaim — a future raw-header dump would
+    // still see it. (Tesla, PR #11 round 1.)
     delete req.headers[PROXY_SECRET_HEADER];
 
     if (secret === null) {

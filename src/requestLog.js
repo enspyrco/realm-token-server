@@ -96,11 +96,14 @@ export function makeRequestLogger({ log = console.log, now = Date.now, skipPaths
           // breaker is turning everyone away", and those want different
           // responses from whoever is reading.
           rateLimited: typeof req.rateLimited === 'string' ? req.rateLimited : null,
-          // null when unenforced, true/false when a secret is configured. `false`
-          // is the interesting line: a caller presented a forwarded address and
-          // could not authenticate as the proxy, so its claim was discarded.
-          // Without this the discard is silent, and a caller forging
-          // X-Forwarded-For looks identical to one that never tried.
+          // null when unenforced; true/false when a secret is configured.
+          // PRECISELY: `false` means "did not authenticate as the proxy" — which
+          // covers a forger, a direct local caller that sent no headers at all,
+          // and a mis-cutover Caddy that is not sending the secret yet. It does
+          // NOT mean "someone forged an address" on its own; the pair to read is
+          // proxyAuthenticated:false WITH proxied:false, i.e. the proxy is not
+          // speaking. (Tesla, PR #11 round 1 — the comment named one of three.)
+          // Without this field the discard is silent either way.
           proxyAuthenticated: typeof req.proxyAuthenticated === 'boolean' ? req.proxyAuthenticated : null,
         }));
       } catch (err) {

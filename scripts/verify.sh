@@ -19,6 +19,9 @@ source scripts/devenv.sh
 
 PORT="${PORT:-8781}"
 export PORT
+# Main + every probe port, in one place. Adding a probe means adding its offset
+# HERE, and cleanup follows automatically.
+PROBE_PORTS="$PORT $((PORT + 1)) $((PORT + 2)) $((PORT + 3))"
 BASE="http://127.0.0.1:$PORT"
 LOG="$(mktemp)"
 
@@ -53,7 +56,10 @@ cleanup() {
   wait "$SERVER_PID" 2>/dev/null || true
   local held p
   # Every port this script may have bound, not only the main one.
-  for p in "$PORT" $((PORT + 1)) $((PORT + 2)) $((PORT + 3)); do
+  # Every port this script may bind, from ONE list. A hardcoded triad orphaned a
+  # listener the moment a fourth probe was added (Tesla predicted exactly this in
+  # PR #11 round 1: "that is PR #6 round 7 waiting to happen in the next integer").
+  for p in $PROBE_PORTS; do
     held="$(listener_on "$p")"
     [ -n "$held" ] && kill $held 2>/dev/null || true
   done

@@ -299,13 +299,22 @@ Caddy side:
 
 ```
 reverse_proxy 127.0.0.1:8791 {
+    header_up -X-Realm-Proxy-Secret
     header_up X-Realm-Proxy-Secret "<secret>"
 }
 ```
 
+The leading `-` line is load-bearing. Caddy passes client headers through before
+applying `header_up`, so without the delete a client that merely *sends*
+`X-Realm-Proxy-Secret` can have both values arrive comma-joined — which never
+equals the secret, so that request fails closed onto the gateway bucket. Failing
+closed is correct; letting a caller *choose* it is not.
+
 At least 32 characters (`openssl rand -hex 32`), no surrounding whitespace, or
-the server refuses to boot. **Turn it on only after Caddy is sending it** — until
-then every request keys on the gateway and shares one bucket. The boot `policy`
+the server refuses to boot. **Cutover is ordered, in both directions.** On: deploy → Caddy sends the header →
+set the secret. Off: unset the secret **first**, then remove it from Caddy. Either
+sequence reversed leaves the service enforcing while the proxy is silent, and every
+client keys on the gateway in one shared bucket. The boot `policy`
 log line reports `proxyAuth: "enforced" | "unenforced"` so the state is
 answerable without guessing.
 

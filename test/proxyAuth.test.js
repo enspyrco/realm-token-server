@@ -87,9 +87,39 @@ test('a secret that is a prefix of the real one is refused', () => {
   assert.equal(req.headers['x-forwarded-for'], undefined);
 });
 
-// An array arrives when a header is sent twice. A non-string reaching
-// createHash would throw and 500 the request; it must simply not match.
-test('a duplicated secret header does not throw', () => {
+// A header sent twice does NOT arrive as an array — Node HTTP/1.1 joins the
+// values with ", " into ONE STRING. Verified against a live node http server:
+//   two values AAA, BBB  ->  typeof 'string', value "AAA, BBB"
+// An earlier version of this test injected an array, which production never
+// produces (Tesla, PR #11 round 1: "you tested the throw that production will
+// not throw"). A fake more forgiving than the real API proves nothing.
+//
+// Fail-CLOSED is the wanted behaviour: a comma-joined value never equals the
+// secret, so the claim is discarded and the caller keys on its socket. That is
+// correct, and it is also why the Caddy snippet must DELETE the client's copy of
+// the header before setting its own — otherwise a client can force this branch
+// by simply sending the header.
+test('a duplicated secret header arrives comma-joined and fails CLOSED', () => {
+  const req = run(makeProxyAuthMiddleware({ secret: SECRET }), {
+    [PROXY_SECRET_HEADER]: `${SECRET}, ${SECRET}`,
+    'x-forwarded-for': '203.0.113.99',
+  });
+  assert.equal(req.headers['x-forwarded-for'], undefined);
+  assert.equal(req.proxyAuthenticated, false);
+});
+
+// Client-prepended value: the shape a missing `header_up -X-...` produces.
+test('a client-prepended value cannot ride in on the real secret', () => {
+  const req = run(makeProxyAuthMiddleware({ secret: SECRET }), {
+    [PROXY_SECRET_HEADER]: `attacker-junk, ${SECRET}`,
+    'x-forwarded-for': '203.0.113.99',
+  });
+  assert.equal(req.headers['x-forwarded-for'], undefined, 'must not authenticate on a substring match');
+});
+
+// Defensive: an array can still reach the middleware from a non-HTTP caller or a
+// future HTTP/2 path. It must not reach createHash and 500 the request.
+test('an array-valued secret header does not throw', () => {
   const req = run(makeProxyAuthMiddleware({ secret: SECRET }), {
     [PROXY_SECRET_HEADER]: [SECRET, SECRET],
     'x-forwarded-for': '203.0.113.99',
