@@ -3,7 +3,7 @@ import { makeExchangeHandler } from './exchange.js';
 import { makeMintHandler } from './mint.js';
 import { makeCorsMiddleware } from './cors.js';
 import { makeRequestLogger } from './requestLog.js';
-import { makeProxyAuthMiddleware } from './proxyAuth.js';
+import { makeProxyAuthMiddleware, assertValidProxySecret } from './proxyAuth.js';
 import { makeRateLimiter, RateLimitScope } from './rateLimit.js';
 
 const MINUTE_MS = 60_000;
@@ -76,11 +76,15 @@ export function createApp({
     throw new TypeError('createApp: trustProxyHops must be a non-negative integer');
   }
 
-  // null or a string, nothing else. A number or object reaching createHash
-  // throws per REQUEST, not at boot — every caller presenting the header would
-  // 500 while the boot log still announced `enforced`. Fail at construction.
-  if (trustedProxySecret !== null && typeof trustedProxySecret !== 'string') {
-    throw new TypeError('createApp: trustedProxySecret must be a string or null');
+  // Same rule as the env resolver, from the same function — createApp is the
+  // public constructor and inherits none of appOptionsFromEnv's validation.
+  // A bare `typeof === 'string'` check here passed the EMPTY string, which then
+  // took the enforcing branch and authenticated any caller sending a bare
+  // header (`matches('', '')` is true) while the boot line printed `enforced`.
+  // A control that reports enforced while admitting everyone is the exact
+  // failure this option exists to remove.
+  if (trustedProxySecret !== null) {
+    assertValidProxySecret(trustedProxySecret);
   }
 
   const app = express();
@@ -91,12 +95,25 @@ export function createApp({
   // prefix from an untrusted caller is ignored at the correct setting.
   app.set('trust proxy', trustProxyHops);
 
-  // Ahead of the logger, and therefore ahead of everything: express computes
-  // req.ip lazily from the headers as they stand when it is FIRST read, and the
-  // logger reads it. Mounting this later would authenticate a value already
-  // taken. Measured 2026-08-20: a host process forging X-Forwarded-For against
-  // the published port was believed, because Caddy runs network_mode: host and
-  // is therefore indistinguishable from it by address.
+  // MUST precede the RATE LIMITERS. They read req.ip during the request, so a
+  // forwarding claim still standing at that point is the one the per-IP bucket
+  // is keyed on — which is the entire vulnerability.
+  //
+  // Corrected 2026-08-20 (PR #11 round 1): an earlier version of this comment
+  // said "ahead of the logger, because express computes req.ip lazily on FIRST
+  // read and the logger reads it." That mechanism is wrong. requestLog reads
+  // req.ip inside res.on('finish') (requestLog.js:120) — after the response, by
+  // which time this has run regardless of their relative order. MEASURED: moving
+  // this below the logger keeps all 153 unit tests AND the enforced wire probe
+  // green; deleting it reddens the wire probe. So the probe binds PRESENCE and
+  // position-before-the-limiters, not position-before-the-logger.
+  //
+  // It stays above the logger anyway, for a smaller and honest reason: the log
+  // line then describes post-strip state. That is legibility, not safety.
+  //
+  // Measured 2026-08-20: a host process forging X-Forwarded-For against the
+  // published port was believed, because Caddy runs network_mode: host and is
+  // therefore indistinguishable from it by address.
   app.use(makeProxyAuthMiddleware({ secret: trustedProxySecret }));
 
   // Before everything, so the log sees requests CORS refuses (403s, denied
@@ -196,6 +213,10 @@ export function createApp({
     (log ?? console.log)(
       // proxyAuth reports whether the secret is SET, never its value. Unenforced
       // is the state an operator most needs to see, and it is the silent one.
+      // SAME SCOPE CAVEAT as requireKnownProvider above: this reports createApp's
+      // ARGUMENT. Delete the app.use(makeProxyAuthMiddleware(...)) line and this
+      // still prints `enforced`. The witness for the MOUNT is the enforced wire
+      // probe in scripts/verify.sh, not this line.
       JSON.stringify({
         event: 'policy',
         requireKnownProvider,

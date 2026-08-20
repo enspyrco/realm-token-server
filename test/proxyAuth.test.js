@@ -13,6 +13,7 @@ import {
   InvalidProxySecret,
   PROXY_SECRET_HEADER,
   MIN_PROXY_SECRET_LENGTH,
+  assertValidProxySecret,
 } from '../src/proxyAuth.js';
 import { createApp } from '../src/server.js';
 import { es256Keys } from './helpers.js';
@@ -201,7 +202,7 @@ test('createApp refuses a non-string secret at construction, not per-request', (
     allowedOrigins: [],
     trustedProxySecret: 12345,
     log: () => {},
-  }), TypeError);
+  }), InvalidProxySecret);
 });
 
 test('a discarded claim is visible in the request log, not silent', async () => {
@@ -228,4 +229,63 @@ test('a discarded claim is visible in the request log, not silent', async () => 
   }
   const entry = lines.map((l) => JSON.parse(l)).find((e) => e.msg === 'request');
   assert.equal(entry.proxyAuthenticated, false, 'a forged claim must leave a trace');
+});
+
+// Round-1 cage-match findings (Maxwell + Carnot, independently).
+test('createApp refuses an EMPTY secret — it would authenticate everyone', () => {
+  // matches('', '') is true, so an empty secret in the enforcing branch admits
+  // any caller sending a bare header, while the boot line prints `enforced`.
+  assert.throws(() => createApp({
+    verifyProviderIdToken: async () => {},
+    privateKeyPem: keys.privateKeyPem,
+    publicKeyPem: keys.publicKeyPem,
+    mintLiveKitToken: async () => 'lk',
+    allowedOrigins: [],
+    trustedProxySecret: '',
+    log: () => {},
+  }), InvalidProxySecret);
+});
+
+test('createApp applies the SAME floor as the env resolver, not a weaker one', () => {
+  for (const bad of ['short', ` ${SECRET} `, 'a'.repeat(MIN_PROXY_SECRET_LENGTH - 1)]) {
+    assert.throws(() => createApp({
+      verifyProviderIdToken: async () => {},
+      privateKeyPem: keys.privateKeyPem,
+      publicKeyPem: keys.publicKeyPem,
+      mintLiveKitToken: async () => 'lk',
+      allowedOrigins: [],
+      trustedProxySecret: bad,
+      log: () => {},
+    }), InvalidProxySecret, `createApp accepted ${JSON.stringify(bad)}`);
+  }
+});
+
+// The rule is "an unauthenticated caller speaks for nobody", not "we strip the one
+// header we currently read". express derives req.protocol/req.secure from
+// x-forwarded-proto and req.hostname from x-forwarded-host whenever trust proxy is
+// set, so a future absolute-URL builder would inherit a caller-chosen value.
+test('an unauthenticated caller loses the whole x-forwarded-* family', () => {
+  const req = run(makeProxyAuthMiddleware({ secret: SECRET }), {
+    'x-forwarded-for': '203.0.113.99',
+    'x-forwarded-proto': 'https',
+    'x-forwarded-host': 'evil.example',
+    'x-forwarded-port': '443',
+    'x-real-ip': '203.0.113.99',
+    'content-type': 'application/json',
+  });
+  for (const h of ['x-forwarded-for', 'x-forwarded-proto', 'x-forwarded-host', 'x-forwarded-port', 'x-real-ip']) {
+    assert.equal(req.headers[h], undefined, `${h} survived`);
+  }
+  // Non-forwarding headers are untouched — this discards claims, not requests.
+  assert.equal(req.headers['content-type'], 'application/json');
+});
+
+test('an AUTHENTICATED proxy keeps the whole family', () => {
+  const req = run(makeProxyAuthMiddleware({ secret: SECRET }), {
+    [PROXY_SECRET_HEADER]: SECRET,
+    'x-forwarded-for': '203.0.113.9',
+    'x-forwarded-proto': 'https',
+  });
+  assert.equal(req.headers['x-forwarded-for'], '203.0.113.9');
+  assert.equal(req.headers['x-forwarded-proto'], 'https');
 });

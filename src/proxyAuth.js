@@ -14,6 +14,31 @@ export class InvalidProxySecret extends Error {
 }
 
 /**
+ * The ONE definition of "an acceptable proxy secret". Exported because
+ * `createApp` must apply the identical rule: it is the public constructor and
+ * does not inherit the env resolver's validation.
+ *
+ * Two chambers with different floors is how `createApp({ trustedProxySecret: '' })`
+ * boots announcing `proxyAuth: "enforced"` and then authenticates anyone who
+ * sends a bare header — `matches('', '')` is true. Same rule, one place.
+ * (Carnot and Maxwell, PR #11 round 1, independently.)
+ *
+ * @throws {InvalidProxySecret} on anything a deployment must not run with.
+ */
+export function assertValidProxySecret(value) {
+  if (typeof value !== 'string') {
+    throw new InvalidProxySecret(`must be a string or null, got ${typeof value}`);
+  }
+  if (value.trim() !== value) {
+    throw new InvalidProxySecret('must not have leading or trailing whitespace — a copy-paste artefact would silently never match');
+  }
+  if (value.length < MIN_PROXY_SECRET_LENGTH) {
+    throw new InvalidProxySecret(`must be at least ${MIN_PROXY_SECRET_LENGTH} characters, got ${value.length}`);
+  }
+  return value;
+}
+
+/**
  * Reads the optional shared secret that authenticates the reverse proxy.
  *
  * Unset means unenforced — `X-Forwarded-For` is believed from any peer the hop
@@ -23,13 +48,7 @@ export class InvalidProxySecret extends Error {
 export function resolveProxySecret(env = {}) {
   const raw = env.REALM_TRUSTED_PROXY_SECRET;
   if (raw === undefined || raw === '') return null;
-  if (raw.trim() !== raw) {
-    throw new InvalidProxySecret('must not have leading or trailing whitespace — a copy-paste artefact would silently never match');
-  }
-  if (raw.length < MIN_PROXY_SECRET_LENGTH) {
-    throw new InvalidProxySecret(`must be at least ${MIN_PROXY_SECRET_LENGTH} characters, got ${raw.length}`);
-  }
-  return raw;
+  return assertValidProxySecret(raw);
 }
 
 // SHA-256 both sides so timingSafeEqual gets equal lengths without leaking the
@@ -64,9 +83,18 @@ export function makeProxyAuthMiddleware({ secret = null } = {}) {
     const ok = matches(presented, secret);
     req.proxyAuthenticated = ok;
     if (!ok) {
-      // express reads X-Forwarded-For right-to-left; with the header gone it
-      // falls back to the socket address, which the caller cannot choose.
-      delete req.headers['x-forwarded-for'];
+      // Discard EVERY forwarding claim, not only the one this service reads
+      // today. `x-forwarded-for` is what `req.ip` derives from — but express
+      // also derives req.protocol/req.secure from `x-forwarded-proto` and
+      // req.hostname from `x-forwarded-host` whenever trust proxy is set. Only
+      // XFF is read here right now, so stripping just it would be correct and
+      // would silently stop being correct the first time someone adds an
+      // absolute-URL builder or an HTTPS redirect. A list of what is forbidden
+      // is wrong on every future addition; the rule is that an unauthenticated
+      // caller speaks for nobody but its socket.
+      for (const h of Object.keys(req.headers)) {
+        if (h.startsWith('x-forwarded-') || h === 'x-real-ip') delete req.headers[h];
+      }
     }
     return next();
   };

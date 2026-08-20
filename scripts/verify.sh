@@ -53,7 +53,7 @@ cleanup() {
   wait "$SERVER_PID" 2>/dev/null || true
   local held p
   # Every port this script may have bound, not only the main one.
-  for p in "$PORT" $((PORT + 1)) $((PORT + 2)); do
+  for p in "$PORT" $((PORT + 1)) $((PORT + 2)) $((PORT + 3)); do
     held="$(listener_on "$p")"
     [ -n "$held" ] && kill $held 2>/dev/null || true
   done
@@ -140,15 +140,17 @@ check 'a disallowed origin is refused' 403 \
   "$(status -X POST "$BASE/exchange" -H 'Origin: https://evil.example' \
       -H 'content-type: application/json' -d '{}')"
 
-# REALM_TRUSTED_PROXY_SECRET at the real entrypoint. The unit tests prove the
-# middleware discards an unauthenticated X-Forwarded-For; only this proves the env
-# var reaches createApp and the middleware is mounted BEFORE anything reads req.ip.
-# Mounting it one line later would pass every unit test and change nothing.
+# UNSET, at the real entrypoint: the behaviour-identical promise. devenv.sh sets
+# TRUST_PROXY_HOPS=0, so XFF is ignored regardless — what this binds is narrower
+# than it looks and is written narrowly on purpose: the middleware never REFUSES a
+# request, only a claim.
 #
-# Uses the UNSET default here, so this asserts the behaviour-identical promise:
-# with no secret configured, a forwarded address is still honoured. devenv.sh sets
-# TRUST_PROXY_HOPS=0, so the header is ignored anyway — what is checked is that the
-# request is SERVED, i.e. the middleware never refuses a request, only a claim.
+# SCOPE, corrected by Carnot in PR #11 round 1: an earlier version of this comment
+# claimed the probe proved the env var reached createApp AND that the middleware was
+# mounted before req.ip is read. It proves neither — with hops=0 and no secret, the
+# result is identical whether the middleware is mounted, misordered, or absent. The
+# probe that actually binds those is the ENFORCED one further down (PORT+3), which
+# needs a secret set and hops=1 before the assertion can distinguish anything.
 check 'UNSET: a request carrying a proxy-secret header is still served' 401 \
   "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/exchange" \
       -H 'content-type: application/json' \
@@ -318,6 +320,73 @@ kill "$ON_PID" 2>/dev/null || true
 wait "$ON_PID" 2>/dev/null || true
 held="$(listener_on "$ON_PORT")"; [ -n "$held" ] && kill $held 2>/dev/null || true
 rm -f "$ON_LOG"
+
+# The ENFORCED path at the real entrypoint — the probe Carnot's round-1 finding
+# said was missing. It needs a real secret AND hops=1 before a forged
+# X-Forwarded-For means anything, so it is the only check here that can tell a
+# mounted middleware from an absent one at the wire.
+#
+# SCOPE, measured rather than asserted (the first draft of this comment claimed it
+# distinguished a correctly-ORDERED mount, which it does not): deleting the
+# app.use turns this RED; moving the app.use below the request logger leaves it
+# GREEN. So it binds PRESENCE and position-ahead-of-the-rate-limiters. It does not
+# bind position relative to the logger — and it needn't, because the logger reads
+# req.ip on 'finish', after this has already run either way.
+#
+# The assertion is the vulnerability itself, inverted. Rotate a forged client
+# address past the per-IP ceiling: unauthenticated, every address is discarded and
+# they all key on one socket, so the limiter bites (429). Delete the app.use, or
+# mount it after the logger where req.ip is already computed, and each forged
+# address gets its own bucket — no 429, and this goes red.
+#
+# Own port so it cannot collide with the servers above, and the same
+# occupancy-refusal discipline as the others.
+ENF_PORT=$((PORT + 3))
+if [ -n "$(listener_on "$ENF_PORT")" ]; then
+  echo "FAIL port $ENF_PORT (proxy-auth probe) is already in use by pid(s) $(listener_on "$ENF_PORT" | tr '\n' ' ')"
+  exit 1
+fi
+
+ENF_SECRET="verify-sh-proxy-secret-0123456789abcdef"
+ENF_LOG=$(mktemp)
+REALM_TRUSTED_PROXY_SECRET="$ENF_SECRET" TRUST_PROXY_HOPS=1 PORT=$ENF_PORT npm start >"$ENF_LOG" 2>&1 &
+ENF_PID=$!
+ENF_BASE="http://127.0.0.1:$ENF_PORT"
+for _ in $(seq 1 50); do curl -fsS "$ENF_BASE/healthz" >/dev/null 2>&1 && break; sleep 0.2; done
+
+# Confirm the thing answering is OURS, not a stranger that won the bind.
+if ! kill -0 "$ENF_PID" 2>/dev/null; then
+  echo "FAIL proxy-auth server (pid $ENF_PID) is not running — the probes below would measure a stranger"
+  cat "$ENF_LOG"
+  exit 1
+fi
+
+enf_post() {  # $1 = forged client address; $2 = 'auth' to present the secret
+  if [ "${2:-}" = "auth" ]; then
+    curl -s -o /dev/null -w '%{http_code}' -X POST "$ENF_BASE/exchange" \
+      -H 'content-type: application/json' -H "x-forwarded-for: $1" \
+      -H "x-realm-proxy-secret: $ENF_SECRET" -d '{"idToken":"nope"}'
+  else
+    curl -s -o /dev/null -w '%{http_code}' -X POST "$ENF_BASE/exchange" \
+      -H 'content-type: application/json' -H "x-forwarded-for: $1" -d '{"idToken":"nope"}'
+  fi
+}
+
+check 'ENFORCED: the boot line announces the policy' 1 \
+  "$(grep -c '"proxyAuth":"enforced"' "$ENF_LOG" >/dev/null && echo 1 || echo 0)"
+
+# 30 rotating forged addresses. Unauthenticated they all key on the socket, so the
+# ceiling is reached; if the strip were not happening each would be its own bucket.
+enf_seen_429=0
+for i in $(seq 1 31); do
+  [ "$(enf_post "203.0.113.$i")" = "429" ] && { enf_seen_429=1; break; }
+done
+check 'ENFORCED: rotating a forged X-Forwarded-For cannot evade the ceiling' 1 "$enf_seen_429"
+
+kill "$ENF_PID" 2>/dev/null || true
+wait "$ENF_PID" 2>/dev/null || true
+held="$(listener_on "$ENF_PORT")"; [ -n "$held" ] && kill $held 2>/dev/null || true
+rm -f "$ENF_LOG"
 
 echo
 if [ "$failures" -eq 0 ]; then
