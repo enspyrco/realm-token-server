@@ -405,6 +405,19 @@ for i in $(seq 1 31); do
 done
 check 'ENFORCED: rotating a forged X-Forwarded-For cannot evade the ceiling' 1 "$enf_seen_429"
 
+# The OTHER terminal, at the wire. The check above binds fail-OPEN (a forgery must
+# not buy a fresh bucket). It is deaf to fail-closed-too-hard: invert the `if (!ok)`
+# to always-strip and it stays green while every real client collapses onto one
+# bucket — the outage a naive address-based fix would have shipped. Only an
+# in-process test caught that, in the chamber this file exists because it cannot
+# witness wiring. `enf_post ... auth` existed and was never driven; a helper that
+# cannot fire is a press release. (Tesla, PR #11 round 3.)
+#
+# The ceiling is already spent by the loop above, so an AUTHENTICATED caller
+# presenting a fresh client address must still be served: its bucket is its own.
+check 'ENFORCED: an authenticated proxy still gets a fresh bucket past the ceiling' 401 \
+  "$(enf_post "198.51.100.42" auth)"
+
 kill "$ENF_PID" 2>/dev/null || true
 wait "$ENF_PID" 2>/dev/null || true
 held="$(listener_on "$ENF_PORT")"; [ -n "$held" ] && kill $held 2>/dev/null || true

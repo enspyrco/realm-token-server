@@ -319,3 +319,38 @@ test('an AUTHENTICATED proxy keeps the whole family', () => {
   assert.equal(req.headers['x-forwarded-for'], '203.0.113.9');
   assert.equal(req.headers['x-forwarded-proto'], 'https');
 });
+
+// Tesla, round 3: the strip is a denylist and cannot be completed — RFC 7239's
+// `Forwarded` is not `x-forwarded-*`, and neither is `x-original-forwarded-for`.
+// The stated law is "an unauthenticated caller speaks for nobody but its socket",
+// so req.ip is PINNED to the socket rather than left derived from a header set.
+//
+// HONEST SCOPE, measured: the pin has NO observable behavioural difference today.
+// Express reads only `x-forwarded-for` to build req.ip, and the strip already
+// removes that — a first version of this test sent `Forwarded:` and
+// `x-original-forwarded-for` and passed identically with the pin DELETED, i.e. it
+// could not fail. So this asserts the MECHANISM (an own `ip` property equal to the
+// socket) rather than a behaviour, and that is the strongest true claim available.
+// The pin is defence in depth against a future express, or any middleware that
+// reads a forwarding header this file has never met.
+test('an unauthenticated request has req.ip PINNED to its socket address', () => {
+  const req = {
+    headers: { 'x-forwarded-for': '203.0.113.99', forwarded: 'for=203.0.113.99' },
+    socket: { remoteAddress: '10.0.0.7' },
+  };
+  let called = false;
+  makeProxyAuthMiddleware({ secret: SECRET })(req, {}, () => { called = true; });
+  assert.ok(called);
+  assert.equal(req.ip, '10.0.0.7', 'req.ip must be the socket, not anything a header claimed');
+  assert.ok(Object.hasOwn(req, 'ip'), 'the pin must be an OWN property shadowing the lazy getter');
+});
+
+test('an AUTHENTICATED request is NOT pinned — the proxy still speaks for its clients', () => {
+  const req = {
+    headers: { [PROXY_SECRET_HEADER]: SECRET, 'x-forwarded-for': '198.51.100.7' },
+    socket: { remoteAddress: '10.0.0.7' },
+  };
+  makeProxyAuthMiddleware({ secret: SECRET })(req, {}, () => {});
+  assert.equal(Object.hasOwn(req, 'ip'), false, 'pinning an authenticated proxy would collapse every client onto one bucket');
+});
+

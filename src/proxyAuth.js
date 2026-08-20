@@ -91,6 +91,27 @@ export function makeProxyAuthMiddleware({ secret = null } = {}) {
     const ok = matches(presented, secret);
     req.proxyAuthenticated = ok;
     if (!ok) {
+      // PIN FIRST, strip second. The strip below is a denylist and cannot be
+      // completed: it does not cover RFC 7239 `Forwarded`, nor
+      // `x-original-forwarded-for`, nor whatever is standardised next — and the
+      // comment under it states a LAW ("speaks for nobody but its socket") that a
+      // prefix match cannot deliver. Growing the list is the same move this PR
+      // exists to refuse. (Tesla, PR #11 round 3.)
+      //
+      // So make the law true by construction: shadow express's lazy `req.ip`
+      // getter with the socket address. A forwarding header this code has never
+      // heard of cannot key the limiter, because req.ip is no longer derived from
+      // headers at all for this request.
+      const socketAddress = req.socket?.remoteAddress;
+      if (typeof socketAddress === 'string') {
+        Object.defineProperty(req, 'ip', {
+          value: socketAddress,
+          configurable: true,
+          enumerable: true,
+        });
+      }
+      // Kept as defence in depth, and because anything else reading these
+      // headers directly (not via req.ip) should not see a claim we refused.
       // Discard EVERY forwarding claim, not only the one this service reads
       // today. `x-forwarded-for` is what `req.ip` derives from — but express
       // also derives req.protocol/req.secure from `x-forwarded-proto` and
