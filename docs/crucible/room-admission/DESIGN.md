@@ -1,8 +1,20 @@
-# DESIGN — room admission for Realm (v3, post-temper)
+# DESIGN — room admission for Realm (v4, post-temper round 2, + 2026-08-20 amendments)
 
-**Status:** recast after a full 4-way strike (`TEMPER.md`, round 1). **This v3 is itself un-struck**
-— a substantial post-temper recast is not covered by the strike that produced it. Round 2 required
-before build. And a design temper is never a substitute for a `/cage-match` on the eventual diff.
+**Status, corrected 2026-08-20.** The header here read *"v3 … itself un-struck. Round 2 required
+before build"* long after round 2 had happened — `TEMPER.md` records it (all four families RECAST,
+no dark seats), and this document already carried its v4 folds while announcing itself as an
+unstruck v3. Fixed rather than left, because stale prose in this repo has previously steered an edit
+into restoring behaviour the code had deliberately dropped.
+
+Accurate as of now, at the scope `TEMPER.md` itself claims:
+
+- **Struck twice**, full 4-way panel both times, getting smaller each round (the 2×2 died, then the
+  `jti` store died).
+- **v4's round-2 folds have not been struck.** No adversary has seen them.
+- **The 2026-08-20 amendments below have not been struck either**, and they are the largest change
+  since round 2 — §5 gains a store boundary and §7 is re-scoped.
+- **Not "battle-tested."** The implementation is unproven; step 6 remains `/cage-match`-by-law. A
+  design temper is never a substitute for a code review on the eventual diff.
 
 **What changed from v2, and why.** v2's spine was *"`RoomVisibility` is two axes wearing one enum,
 so split it."* **All four families killed that independently.** Tesla's blow landed hardest:
@@ -15,6 +27,23 @@ v3 ships the smaller thing. What survived is the *enforcement location* and the 
 the taxonomy.
 
 ---
+
+## Amendments, 2026-08-20 (unstruck)
+
+Three changes since the round-1 strike. **None has been through a temper**; they are recorded here
+rather than folded in silently, so a later reader can see which parts of this document an adversary
+has actually hit.
+
+1. **Nick's ruling: the storage backend is not the engine's** — *"I don't mind using Firestore but it
+   shouldn't be in the engine."* §5's schema was written directly in Firestore shapes and read as
+   the primitive itself. It is now explicitly one adapter's rendering of a store-shaped interface
+   (§5, "The store boundary"). This is the same law as rulings 1 and 2 — the engine holds no policy
+   it does not own — applied to persistence. See §10.5.
+2. **§7 was mis-titled and mis-ranked.** Its three costs are properties of *the Firestore adapter*,
+   not of admission. They were reading as design-level constraints because a backend had been
+   promoted into the primitive. Retitled and re-scoped; §7 is now explicitly adapter-local.
+3. **Step 1 has been measured** (§8), which was a blocking prerequisite and is now answered — with a
+   result that changes step 7 from a config flip into a build. C7 discharged; C2 updated; C9 added.
 
 ## 1. The problem
 
@@ -39,7 +68,11 @@ neighbour and is the wrong lattice — a classroom's students must enter and mus
 webhooks (`participant_joined`) fire *after* the media connection is established. Whatever the mint
 grants is granted. Carnot independently searched and found no such hook; Tesla pinned the correct
 scope for the claim: *"webhooks + RoomService + Cloud project settings"*, not "we read the webhook
-enum." If a Cloud pre-connect authorization callback exists, this location is wrong and v3 recasts.
+enum." If a Cloud pre-connect authorization callback exists, this location is wrong and the design
+recasts. **Narrowed 2026-08-20:** the deployment is self-hosted `livekit-server:v1.13.5` (§8, step
+1), so a *Cloud* project-settings callback could not apply to it in any case. The claim that matters
+for this deployment is the narrower one — no pre-join hook in self-hosted LiveKit — and that is what
+C1 should be read as asserting.
 
 ### Separate the decision from the enforcement
 
@@ -160,6 +193,33 @@ choosing presets of that object.
 This is more mechanism-not-policy than v4 was, and it deletes open questions 1 and 2 rather than
 answering them.
 
+### The store boundary (added 2026-08-20, Nick's ruling)
+
+**The shapes below are Firestore's rendering of the primitive, not the primitive.** What the engine
+owns is: *a room carries a permissions object; a member tuple may exist for a principal; a
+capability may exist for a room.* Where those live is a world's choice.
+
+The engine already has this seam and already keeps it: `packages/realm/pubspec.yaml` declares **no
+dependencies at all**, `RoomConfigStore` is the abstract port, and `realm_firebase` holds the
+adapter. Admission gets the same treatment — a store interface in `realm`, a Firestore
+implementation in `realm_firebase` — rather than a second, parallel notion of persistence written
+in collection paths.
+
+Two consequences worth stating, because both were live in this document before the ruling:
+
+- **The read mechanism is the adapter's business.** §7's costs attach to *the Firestore adapter*, not
+  to admission. A different backend has different costs and the design must not inherit either set.
+- **`/exchange` talks to a store, not to Firestore.** Step 4 must not grow a `firebase-admin`
+  import. If it does, the backend has been promoted into the primitive in a third place, and the
+  token server becomes the reason the engine can never change stores.
+
+The known violations of this ruling *outside* this document are engine-shipped vendor vocabulary —
+`AuthProviderId.firebase` (`auth_provider.dart:145`), `StorageBackendId.firebase`
+(`storage_provider.dart:62`) and the three "canonical backends" that self-register at import
+(`storage_provider.dart:80`). Dependency-clean, opinion-dirty. That sweep belongs to `tech_world`
+and is tracked on `claude-tasks#3262`, which already covers the sibling case of engine-chosen
+*defaults*.
+
 ```
 rooms/{roomId}
   isPublic: bool                    // UNCHANGED — listing. Already shipped, already queried.
@@ -177,7 +237,7 @@ rooms/{roomId}/invites/{codeHash}   // capability-based admission (guests)
   expiresAt, revoked, createdBy     // NOTE: no `uses` counter — see §6
 ```
 
-Security rules — the load-bearing part:
+Security rules — the load-bearing part, **in the Firestore adapter**:
 
 ```
 match /rooms/{roomId}/members/{uid} {
@@ -187,6 +247,11 @@ match /rooms/{roomId}/members/{uid} {
 
 A user may ask "am I admitted?" and cannot enumerate the roster. The fact exposed is **admission**,
 not **readability** — the read≠join conflation is closed by construction, not by discipline.
+
+The *requirement* is engine-level and survives a change of backend: **a principal may learn its own
+admission and may not enumerate the roster.** The rules block above is how Firestore satisfies it.
+Any store that cannot express that requirement is not a valid adapter — which is the check to run
+before adopting one, not after.
 
 ### The predicate
 
@@ -273,16 +338,26 @@ admission issues a short-expiry single-recipient code rather than relying on the
 "§3's `jti` single-use rule" after round 2 had deleted `jti`. A stale claim in a tempered document is
 how a later implementer resurrects a store the temper killed.)*
 
-## 7. Failure modes of the caller-ID-token lookup
+## 7. Failure modes of the caller-ID-token lookup — **an adapter concern, not a design one**
+
+**Re-scoped 2026-08-20.** Everything below is a property of *one way of reading one backend*. It sat
+in this document reading as a constraint on admission itself, and it cost a later session real time:
+the first item was carried forward as a *blocking architectural unknown* when it is neither blocking
+nor architectural. That is what a promoted backend does — its operational quirks arrive wearing the
+primitive's authority. Kept here because the Firestore adapter is the one being built first.
 
 `/exchange` already holds the caller's Firebase ID token. Firestore REST accepts it as
 `Authorization: Bearer` and **enforces Security Rules as that user**; a service-account token
 **bypasses rules entirely** via IAM. So the cheap path is also the less privileged one — but it has
 three costs v2 did not price:
 
-- **App Check is a hard incompatibility.** If this project, or any OSS consumer, enforces App Check
-  on Firestore, a server-side REST GET carrying only an ID token fails **for everyone** — the first
-  hardening pass takes every join dark. Documented as a stated limitation.
+- **App Check would be a hard incompatibility — and is not enforced.** If a project enforces App
+  Check on Firestore, a server-side REST GET carrying only an ID token fails **for everyone**.
+  **Measured 2026-08-20 on `adventures-in-tech-world-0`: the Firebase App Check API has never been
+  enabled on the project** (`firebaseappcheck.googleapis.com` → `SERVICE_DISABLED`), so it cannot be
+  enforcing anything. Scope of that measurement: one project, at one moment, by one probe. It says
+  nothing about an OSS consumer's project, and nothing about tomorrow — a future hardening pass
+  remains able to take every join dark with no code change here.
 - **Refusal is overloaded.** Rules-deny, missing document, expired ID token, disabled API, billing
   and App Check all collapse into one refusal. The client may see one status; the server must
   **distinguish and log them separately**, or an availability cliff reads as a clean "not admitted."
@@ -290,6 +365,17 @@ three costs v2 did not price:
   (`src/firebase.js:14`) means a revoked account still verifies until token expiry.
 
 If any of these bite, the fallback is a service account — a named, priced retreat, not a surprise.
+
+**And the retreat is cheaper than it looks, which weakens the case for this path.** The privilege
+argument is the whole justification for reading as the caller: it keeps the token server below a
+service account. But §4's eviction primitive **requires** a privileged store-side observer — something
+must watch a member tuple disappear and call `removeParticipant`. That component is
+service-account-shaped and it is not optional. So the privilege budget this path protects is already
+committed elsewhere in the system.
+
+That does not settle it — eviction is undesigned, and "a privileged component exists somewhere" is
+not "this component should be privileged." It does mean the choice is **a live design question for
+the step-4 build, not a settled premise of this document.**
 
 ## 8. Build order (recast; C6 struck)
 
@@ -301,14 +387,47 @@ or missing→refuse (a global outage). There is no third path.
 | # | Step | Repo | Gate |
 |---|---|---|---|
 | **0** | **Deployment-wide** switch: refuse `prov == "anonymous"` at the mint entirely | `realm-token-server` | ships alone, no new data, no read |
-| **1** | **Measure** the LiveKit deployment: Cloud vs self-hosted, actual `auto_create` | infra | **blocking prerequisite** |
+| **1** | ~~**Measure** the LiveKit deployment~~ — **DONE 2026-08-20, see below** | infra | discharged |
 | 2 | Engine: `admission` field + `members`/`invites` + rules + `canJoin`; `createRoom` writes the owner tuple transactionally | `tech_world` | **HANDOFF** |
 | 3 | **Migration** writes `admission` + `defaultCanPublish` on every live room, and owner member tuples; ships with **backfill verification + stranded-room repair tooling** | `tech_world` | data before code |
 | 4 | `/exchange` room-scoped mode: verify ID token → `canJoin` → mint `{room, jti, exp:120s}` | `realm-token-server` | after 3 |
 | 5 | Clients adopt the room-scoped flow | `tech_world` | rollout |
 | 6 | `/livekit-token` mints from `claims.room`; **refuses** an unscoped credential. **Red-prove.** | `realm-token-server` | `/cage-match` by law |
-| 7 | `auto_create: false` + explicit room creation, **if step 1 says it is settable** | infra | else deleted |
+| 7 | `auto_create: false` + explicit room creation — **settable, but not a flip; see below** | infra + `tech_world` | after 2 |
 | 8 | Eviction: removal triggers `removeParticipant` | either | separate primitive (§4) |
+
+### Step 1, measured (2026-08-20) — and step 7 is bigger than it was written
+
+**Self-hosted**, not Cloud: `infra/livekit/livekit.yaml`, container `livekit/livekit-server:v1.13.5`
+on the OCI box. So the config file is ours and `auto_create` **is** a settable knob — C7 discharged.
+
+**It is not currently set.** There is no `room:` block in `livekit.yaml` at all, so the deployment
+takes LiveKit's default of `auto_create: true`. Any holder of a valid mint credential can conjure an
+unbounded number of rooms. That surface is real and was named in neither the original issue nor
+either retrospective.
+
+**But the flip would break everything, because the surface is load-bearing.** Nothing in this system
+ever creates a LiveKit room explicitly — `RoomServiceClient` appears in **zero** consumers.
+`tech_world`'s `RoomService` and `RoomConfigStore` write *Firestore* documents; every hit for
+`createRoom` across the workspace is that, not LiveKit. `realm-token-server` mints tokens and makes
+no room-service call. Every LiveKit room in production therefore exists *because a client connected
+with a token naming it*.
+
+So step 7 is not an infra config change. It is:
+
+1. an explicit room-creation path that runs before first join, and
+2. a decision about **who** may create — which is the same decision as admission, one layer down.
+
+Room creation is currently an emergent side-effect of token minting. Note the shape: the design
+already says *"missing room document = refusal"* on the store side; the LiveKit side has no such
+decision at all. **These are the same door at two layers, and only one of them is being built.**
+Ordering: step 7 now depends on step 2, because "who may create a room" is answerable only once the
+permissions object exists.
+
+*Scope of this measurement: the repo config and the running container list, read 2026-08-20. The
+live room inventory was **not** captured — two attempts to reach the LiveKit API from inside the box
+failed on SSH and were abandoned rather than retried into a claim. Nothing above rests on it; the
+"nothing creates rooms explicitly" finding is from source, not from the server.*
 
 **Step 0, corrected by round 2, and deliberately under-sold.** v3 wrote it as "refuse `anonymous` on
 non-public rooms" — which Tesla showed is a poison pill: *publicness is `isPublic`, the listing axis
@@ -359,12 +478,21 @@ old identity credentials stop working at step 6.
    adding it later if a real requirement ever appears.
 4. **Automatic eviction vs owner action — STILL OPEN**, and correctly so: §4 scopes eviction as its
    own design pass, so this is a question for that pass rather than this one.
+5. **The storage backend is not the engine's (ruling added 2026-08-20).** *"I don't mind using
+   Firestore but it shouldn't be in the engine."* Same law as rulings 1 and 2 — the engine holds no
+   policy it does not own — now applied to persistence: the engine owns the *shape* of admission
+   state and a port to reach it; a world picks what implements the port. §5's "store boundary" is
+   this ruling; §7's re-scoping is its first consequence. The engine's own violations
+   (`AuthProviderId.firebase`, the self-registering storage backends) are `tech_world`'s to sweep,
+   on `claude-tasks#3262`.
 
-## 11. Claims to falsify (v3)
+## 11. Claims to falsify (v4, + 2026-08-20)
 
 - **C1.** No LiveKit pre-join hook, so the mint is the only door. *Held under all four strikes.*
-- **C2.** Firestore REST + ID token enforces rules as that user. *Verified in Firebase's docs; not
-  yet exercised against this project, and now qualified by App Check (§7).*
+- **C2.** Firestore REST + ID token enforces rules as that user. *Verified in Firebase's docs; still
+  **not exercised against this project** — that remains the open half. The App Check qualifier is
+  discharged for `adventures-in-tech-world-0` (§7: the API has never been enabled), which removes a
+  hypothetical, not the untested claim underneath it.*
 - **C3 — WITHDRAWN.** The 2×2 split is dead. Its replacement claim: **one `admission` field beside
   `isPublic` is sufficient**, and the only thing that resurrects the split is open question 3.
 - **C4 — quantified, and its scope corrected.** 120s credential TTL bounds **minting**. It does not
@@ -377,4 +505,15 @@ old identity credentials stop working at step 6.
 - **C8 (new, v4).** The mint remains **stateless**. Any future proposal that gives it a store must
   first answer: what distinguishes a retry from a replay?
 - **C6 — WITHDRAWN.** Steps cannot precede the data. Build order reordered accordingly.
-- **C7 — promoted to a blocking prerequisite (step 1).** No longer an assumption in a build table.
+- **C7 — DISCHARGED (2026-08-20).** Measured: self-hosted, `auto_create` unset and therefore `true`,
+  and settable. The measurement replaced it with a larger claim — see C10.
+- **C9 (new, 2026-08-20).** Admission is expressible against a **store port**, not a document
+  database. Falsify by finding a requirement in §5 that Firestore satisfies and a plain key-value
+  store cannot — the "learn your own admission, cannot enumerate the roster" rule is the first place
+  to look, since it is currently satisfied by a security-rules feature rather than by the data shape.
+  If it fails, the honest conclusion is that admission needs a *rules-capable* store, and that
+  requirement must be stated in the port rather than assumed from the adapter.
+- **C10 (new, 2026-08-20).** **Nothing in this system creates a LiveKit room explicitly**, so
+  `auto_create: true` is load-bearing and step 7 is a build, not a config flip. Evidence:
+  `RoomServiceClient` appears in no consumer; every `createRoom` in `tech_world` is Firestore.
+  Falsify by finding any room-service call on any path — a bot, an agent worker, a deploy script.
