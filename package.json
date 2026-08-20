@@ -1,6 +1,6 @@
 {
   "name": "realm-token-server",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "type": "module",
   "description": "Realm credential-exchange + LiveKit token-mint server. Verifies a provider ID token, mints an opaque Realm credential (ES256), and exchanges that credential for a LiveKit access token. See packages/realm/DESIGN.md in enspyrco/tech_world.",
