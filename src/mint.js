@@ -1,11 +1,64 @@
 import { verifyRealmCredential, RealmCredentialRejected } from './realmCredential.js';
 
+import { isSignedInProvider } from './providers.js';
+
+/**
+ * Reads the deployment-wide anonymous-refusal switch. Unset means OFF, which
+ * preserves current behaviour exactly; anything unrecognised REFUSES TO START
+ * rather than being read as off. A security switch that silently accepts "yes"
+ * or "1" as false fails silently in the one direction that matters. Same
+ * contract as resolveTrustProxyHops: refuse to boot rather than run mis-set.
+ */
+export function resolveRequireKnownProvider(env) {
+  // The pre-rename name is REFUSED, not ignored. Setting a security switch that
+  // nothing reads fails in the one direction that matters: the operator believes
+  // the box is configured, the switch stays off, and nothing says otherwise.
+  // Every stale runbook, ticket and PR description that still names the old
+  // variable now produces a loud boot failure instead of silent permissiveness.
+  // (Carnot and Tesla, independently, on PR #6 round 9 — the PR body itself still
+  // advertised the old name after the rename landed.)
+  if (env.REALM_REFUSE_ANONYMOUS !== undefined) {
+    throw new Error(
+      'REALM_REFUSE_ANONYMOUS was renamed to REALM_REQUIRE_KNOWN_PROVIDER '
+      + '(it gates on an allowlist of known sign-in providers, not on the anonymous '
+      + 'sentinel). Refusing to start rather than silently ignoring it.',
+    );
+  }
+
+  const raw = env.REALM_REQUIRE_KNOWN_PROVIDER;
+  if (raw === undefined) return false;
+  if (raw === 'true') return true;
+  if (raw === 'false') return false;
+  throw new Error(
+    `REALM_REQUIRE_KNOWN_PROVIDER must be exactly "true" or "false" (got ${JSON.stringify(raw)})`,
+  );
+}
+
 // POST /livekit-token  { roomName }  Authorization: Bearer <RealmCredential>
 //
 // The LiveKit mint handler. Holds ONLY the ES256 public key. It accepts nothing
 // but a valid Realm credential — never a raw provider ID token — so the exchange
 // boundary cannot be bypassed by presenting a Firebase token directly here.
-export function makeMintHandler({ publicKeyPem, mintLiveKitToken }) {
+//
+// STILL NOT ROOM AUTHORIZATION. Any signed-in caller may name any room; the
+// admission predicate belongs to the engine and does not exist yet
+// (claude-tasks#2850, docs/crucible/room-admission/DESIGN.md). requireKnownProvider
+// is step 0 of that design and is a RISK TRIM, not the fix: it removes the
+// throwaway-uid caller, not the arbitrary-room capability. It is superseded by
+// per-room `permissions.allowAnonymous` once the engine ships it.
+export function makeMintHandler({ publicKeyPem, mintLiveKitToken, requireKnownProvider = false }) {
+  // Reject a non-boolean at CONSTRUCTION rather than coercing at request time.
+  // Gating on `=== true` alone is safe against the string "false" (truthy, would
+  // have enforced in the dark) but silently permissive against the string "true" —
+  // the complementary 3am, "I set it to true and nothing happened" (Tesla, PR #6).
+  // Neither direction should be guessed: a caller that hands this a string has a
+  // wiring bug, and a wiring bug in a security switch must be loud.
+  if (typeof requireKnownProvider !== 'boolean') {
+    throw new TypeError(
+      `makeMintHandler: requireKnownProvider must be a boolean, got ${typeof requireKnownProvider} `
+      + `(${JSON.stringify(requireKnownProvider)}) — resolve it via appOptionsFromEnv, not raw env`,
+    );
+  }
   return async function mint(req, res) {
     const auth = req.get('authorization') || '';
     const match = /^Bearer (.+)$/.exec(auth);
@@ -21,6 +74,38 @@ export function makeMintHandler({ publicKeyPem, mintLiveKitToken }) {
         return res.status(401).json({ error: 'invalid credential' });
       }
       throw err;
+    }
+
+    // Authorization, decided only after authentication succeeded — so a forged
+    // credential gets 401 from THIS request without an authorization decision
+    // being computed for it.
+    //
+    // That is the whole claim, and it is not secrecy: /exchange still mints a
+    // credential for an anonymous principal, so anyone can obtain one and meet
+    // the 403 on the next hop. An earlier comment here said a forged credential
+    // "never learns this policy exists", which the README already recanted —
+    // and a comment that overclaims is how the denylist got restored "to match
+    // the comment" once already on this PR.
+    //
+    // Positive form: admit only a principal whose provider is PROOF that it signed
+    // in. Membership in SIGNED_IN_PROVIDERS is the whole test.
+    //
+    // Two weaker forms were tried on this PR and both were denylists in disguise:
+    // `!== undefined` admitted null/''/0/non-strings, and "a non-empty string that
+    // is not the sentinel" admitted `'firebase'` — which is exactly what
+    // mapProvider returns for a MISSING or unrecognised sign_in_provider, so
+    // absence of evidence was reading as evidence. An allowlist cannot fail that
+    // way: an unknown provider is simply not in the set.
+    if (requireKnownProvider === true && !isSignedInProvider(claims.provider)) {
+      // The message describes the RULE, not one of its instances. Saying
+      // "anonymous principals are not admitted" would be a denylist wearing the
+      // allowlist's coat: a signed-in user on an unlisted method (phone, a custom
+      // token) would be told they are a guest, and logs grepped for "anonymous"
+      // would go deaf to the actual refusees. Tesla, PR #6 round 4 — the check is
+      // positive; the utterance has to be too.
+      return res.status(403).json({
+        error: 'this deployment admits only recognised signed-in providers',
+      });
     }
 
     const roomName = req.body?.roomName;

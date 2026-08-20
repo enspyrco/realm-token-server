@@ -45,6 +45,15 @@ export function createApp({
   // from the environment via resolveTrustProxyHops, which refuses to guess in
   // production. See rateLimit.js for why both wrong values fail silently.
   trustProxyHops = 0,
+  // Deployment-wide requirement that a principal's `prov` be a KNOWN sign-in
+  // provider (isSignedInProvider / SIGNED_IN_PROVIDERS) — an allowlist. It refuses
+  // anonymous guests, and equally refuses phone auth, custom tokens and anything
+  // else not in that set. Describing it as "refuse anonymous" is the denylist
+  // utterance that this PR has already had to un-restore once. Defaults OFF so
+  // this is behaviour-identical until a deployment opts in. index.js resolves it
+  // from the environment via resolveRequireKnownProvider, which refuses to boot on an
+  // unrecognised value rather than reading it as off.
+  requireKnownProvider = false,
   // Left undefined so rateLimit.js's monotonic default applies; tests inject a
   // frozen clock so no assertion can straddle a window boundary.
   now,
@@ -141,8 +150,32 @@ export function createApp({
     mintLimit,
     globalLimit,
     parseBody,
-    makeMintHandler({ publicKeyPem, mintLiveKitToken }),
+    makeMintHandler({ publicKeyPem, mintLiveKitToken, requireKnownProvider }),
   );
+
+  // Announce the security posture createApp RECEIVED, so an operator can answer
+  // "is it actually on?" without guessing — the question the whole switch turns on.
+  //
+  // SCOPE, stated exactly: this reports createApp's argument. It does NOT witness
+  // the handler. Delete `requireKnownProvider` from the makeMintHandler({...}) call
+  // above and this line still publishes `true` while the handler's default
+  // parameter fails OPEN. An earlier version of this comment claimed the line
+  // "cannot stay truthful if the wiring is cut", which is false in exactly that
+  // direction (Tesla, PR #6 round 7).
+  //
+  // The witnesses for HANDLER behaviour are the HTTP tests — the in-process
+  // 'env string reaches the handler → 403' case, and the five wire probes in
+  // scripts/verify.sh against the real entrypoint. This log covers only what
+  // those cannot: what a RUNNING deployment believes its own posture to be.
+  // Swallowed, like every other write through this sink: the repo's standing
+  // contract is that a throwing log sink cannot take down the service, and an
+  // existing test pins it. A boot-time announcement is the last thing that should
+  // be able to prevent a boot.
+  try {
+    (log ?? console.log)(
+      JSON.stringify({ event: 'policy', requireKnownProvider, trustProxyHops }),
+    );
+  } catch { /* a broken sink must not stop the service starting */ }
 
   return app;
 }

@@ -1,4 +1,5 @@
 import admin from 'firebase-admin';
+import { ANONYMOUS_PROVIDER } from './providers.js';
 
 // Provider-native ID-token verification via the Firebase Admin SDK. This is the
 // external dependency the whole "Node, not Dart" decision turned on — verifying
@@ -25,13 +26,31 @@ function ensureApp() {
 
 // Maps Firebase's sign_in_provider to a Realm AuthProviderId wire string
 // (must match packages/realm AuthProviderId constants).
-function mapProvider(signInProvider) {
+//
+// EXPORTED so its arms can be pinned by a test. Under REALM_REQUIRE_KNOWN_PROVIDER,
+// mint.js admits a principal only if `isSignedInProvider(prov)` — an ALLOWLIST
+// (src/providers.js), not a comparison against the anonymous sentinel. So this
+// mapper is the producer of an admission fact, and two of its arms are
+// load-bearing in opposite directions:
+//
+//   - the `anonymous` arm must keep returning ANONYMOUS_PROVIDER, which is
+//     deliberately absent from the allowlist;
+//   - the `default` arm returns 'firebase', meaning "we do not know how this
+//     principal signed in", which is likewise absent — absence of evidence must
+//     not become evidence.
+//
+// Adding a sign-in method therefore means adding a case HERE and an entry in
+// SIGNED_IN_PROVIDERS, together; a case added alone is refused, which is the
+// safe direction. (This comment previously described a sentinel comparison that
+// mint.js no longer does — a fossil that would have licensed putting the
+// denylist back "to match the comment". Tesla, PR #6 round 4.)
+export function mapProvider(signInProvider) {
   switch (signInProvider) {
     case 'google.com': return 'google';
     case 'apple.com': return 'apple';
     case 'github.com': return 'github';
     case 'password': return 'email_password';
-    case 'anonymous': return 'anonymous';
+    case 'anonymous': return ANONYMOUS_PROVIDER;
     default: return 'firebase';
   }
 }

@@ -33,7 +33,15 @@ check() {
   fi
 }
 
-port_listener() { lsof -tiTCP:"$PORT" -sTCP:LISTEN 2>/dev/null || true; }
+port_listener() { listener_on "$PORT"; }
+# Any port, not just the main one. The boot-refusal and enforcement checks below
+# run children on PORT+1 / PORT+2, and cleanup has to be able to reach those too:
+# `timeout` SIGTERMs `npm`, not necessarily the `node` it spawned, and the
+# enforcement server is DESIGNED to still be serving when its timeout fires. An
+# orphan on :PORT+2 would make the next run's ON server die at bind — after
+# createApp had already emitted its policy line — so a log-grep check would stay
+# green against last week's corpse. (Tesla, PR #6 round 6.)
+listener_on() { lsof -tiTCP:"$1" -sTCP:LISTEN 2>/dev/null || true; }
 
 SERVER_PID=""
 cleanup() {
@@ -43,9 +51,12 @@ cleanup() {
   # build serves every assertion under the new one's name.
   [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null || true
   wait "$SERVER_PID" 2>/dev/null || true
-  local held
-  held="$(port_listener)"
-  [ -n "$held" ] && kill $held 2>/dev/null || true
+  local held p
+  # Every port this script may have bound, not only the main one.
+  for p in "$PORT" $((PORT + 1)) $((PORT + 2)); do
+    held="$(listener_on "$p")"
+    [ -n "$held" ] && kill $held 2>/dev/null || true
+  done
   if [ "$failures" -ne 0 ]; then
     echo
     echo "--- server log ---"
@@ -93,6 +104,30 @@ check 'healthz serves' 200 "$(status "$BASE/healthz")"
 
 check 'a bad token is refused, not thrown' 401 "$(post_exchange)"
 
+# The THIRD state of the switch, at the real entrypoint. The corpse check binds
+# the typo case and the ON probes bind "true"; this binds UNSET — the default, and
+# the one the README promises is behaviour-identical. Hardcode the flag on after
+# the index.js spread and every other check here stays green while that promise
+# shatters (Tesla, PR #6 round 8 — availability, not fail-open, hence not a
+# blocker, but it closes the triad).
+#
+# Deliberately BEFORE the rate-limit section: those checks deliberately exhaust
+# the mint ceiling, and a 429 here would be indistinguishable from a refusal.
+mint_cred_main() {
+  node -e '
+    const jwt = require("jsonwebtoken");
+    process.stdout.write(jwt.sign({ prov: process.argv[1] }, process.env.REALM_JWT_PRIVATE_KEY, {
+      algorithm: "ES256", issuer: "realm", audience: "realm:livekit-mint",
+      subject: "verify-sh-default", expiresIn: 3600,
+    }));
+  ' "$1"
+}
+check 'UNSET: an anonymous principal still mints (default is off)' 200 \
+  "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/livekit-token" \
+      -H 'content-type: application/json' \
+      -H "authorization: Bearer $(mint_cred_main anonymous)" \
+      -d '{"roomName":"default_room"}')"
+
 check 'an allowed origin gets a preflight' 204 \
   "$(status -X OPTIONS "$BASE/exchange" -H "Origin: $CORS_ALLOWED_ORIGINS" -H 'Access-Control-Request-Method: POST')"
 
@@ -116,11 +151,13 @@ check 'the per-IP ceiling refuses the next request' 429 "$(post_exchange)"
 # report green with the mint route wide open.
 check 'the mint route still has its own budget' 401 \
   "$(status -X POST "$BASE/livekit-token" -H 'content-type: application/json' -d '{"roomName":"r"}')"
-# 29, not 30: the check above already spent one, so this takes the window to
-# exactly the ceiling and the assertion below is the FIRST refusal rather than
+# 28, not 30: TWO checks above already spent one mint request each — the budget
+# check, and the UNSET default-off probe added in PR #6 — so this takes the window
+# to exactly the ceiling and the assertion below is the FIRST refusal rather than
 # some request after it. A probe that lands past the boundary still goes red when
 # the limiter is missing, but it no longer measures where the boundary is.
-for _ in $(seq 1 29); do
+# KEEP THIS IN SYNC: every mint-route request added above must come off this count.
+for _ in $(seq 1 28); do
   curl -s -o /dev/null -X POST "$BASE/livekit-token" -H 'content-type: application/json' -d '{"roomName":"r"}'
 done
 check 'the mint route enforces its own ceiling' 429 \
@@ -138,6 +175,131 @@ check 'the healthcheck still passes while a caller is throttled' 200 "$(status "
 # together, so a run that never emits it has a limiter nobody can audit.
 check 'the request log reports whether the client IP came via a proxy' 1 \
   "$(grep -c '"proxied":false' "$LOG" >/dev/null && echo 1 || echo 0)"
+
+# A boot-time refusal only counts if it happens to a REAL process. The unit suite
+# can assert resolveRequireKnownProvider throws; only this loop can assert that the
+# throw actually reaches `npm start` and stops the container coming up. Raised by
+# Tesla on PR #6: the new throw is exactly the class this script exists for, and
+# without this check the first bad value would be discovered by a real deploy.
+#
+# Runs on its own port so it cannot collide with the server still under test above.
+# Same occupancy discipline as the main port and the enforcement port. A held
+# PORT+1 would make this child die at bind — which still exits non-zero, so the
+# corpse check would pass for the WRONG REASON. (The follow-up assertion that the
+# log names the variable does catch it, so this fails loudly either way; the
+# explicit check just says which of the two happened.)
+if [ -n "$(listener_on $((PORT + 1)))" ]; then
+  echo "FAIL port $((PORT + 1)) (boot-refusal probe) is already in use by pid(s) $(listener_on $((PORT + 1)) | tr '\n' ' ')"
+  exit 1
+fi
+
+BOOT_LOG=$(mktemp)
+set +e
+REALM_REQUIRE_KNOWN_PROVIDER=yes PORT=$((PORT + 1)) timeout 10 npm start >"$BOOT_LOG" 2>&1
+BOOT_RC=$?
+set -e
+
+# Assert the CORPSE, not a substring in a log. Three distinct outcomes, and only
+# one is a pass (Tesla, PR #6: "you measured a substring, not a corpse"):
+#   0   -> it booted and exited cleanly. Not a refusal.
+#   124 -> `timeout` killed it, meaning it was still SERVING. Log-the-error-and-
+#          listen-anyway is the false green this check exists to prevent.
+#   else-> it died on its own, which is the refusal we want.
+if [ "$BOOT_RC" -eq 124 ]; then
+  check 'a bad REALM_REQUIRE_KNOWN_PROVIDER refuses to boot' 'died' 'still serving after 10s'
+elif [ "$BOOT_RC" -eq 0 ]; then
+  check 'a bad REALM_REQUIRE_KNOWN_PROVIDER refuses to boot' 'died' 'exited 0 without refusing'
+else
+  check 'a bad REALM_REQUIRE_KNOWN_PROVIDER refuses to boot' 'died' 'died'
+  # And it must say WHY: a service that dies silently on a typo is
+  # indistinguishable from one that crashed for an unrelated reason.
+  check 'the boot refusal names the variable' 1 \
+    "$(grep -c 'REALM_REQUIRE_KNOWN_PROVIDER' "$BOOT_LOG" >/dev/null && echo 1 || echo 0)"
+fi
+rm -f "$BOOT_LOG"
+
+# The ON path through the REAL entrypoint. The check above proves a bad value
+# kills the process; nothing proved a GOOD value reaches the handler. Delete the
+# `...appOptionsFromEnv(process.env)` spread from index.js and every unit test
+# plus the corpse check above stay green while production runs permissive
+# (Tesla, PR #6 round 4 — the untested-wiring class one layer up from Carnot's
+# round-1 finding).
+#
+# The ON path, proven at the WIRE — the corpse, not the press release.
+#
+# An earlier version grepped the boot log for the policy line and claimed a real
+# 403 was unreachable "without a real anonymous Firebase credential". That was a
+# manufactured blocker, and a wrong picture of the machine: /livekit-token never
+# speaks to Firebase. It verifies a Realm JWT with the ES256 public key already in
+# this process's environment, and devenv.sh has already exported the matching
+# PRIVATE key. So the credentials can simply be minted here. (Tesla, PR #6 round
+# 6 — an impossibility claim that consumed its own falsifier.)
+#
+# A log line is the same class as the substring buried above: createApp could
+# print requireKnownProvider:true and still hand `false` to makeMintHandler. These
+# three probes cannot be satisfied that way.
+ON_PORT=$((PORT + 2))
+ON_LOG=$(mktemp)
+
+# Refuse an occupied port, exactly as the main server does on entry. Without this
+# the failure is silent and inverted: a leftover listener (a SIGKILLed run, a node
+# that outlived the `timeout` which SIGTERMed only `npm`) means our `npm start`
+# dies at bind, the healthz loop answers the STRANGER, and the five probes below
+# measure someone else's process. If that stranger happens to refuse anonymous,
+# the load-bearing proof that THIS commit's wiring reached makeMintHandler goes
+# green in the dark. (Tesla, PR #6 round 7 — a frequency this script named for
+# PORT+2 and then only guarded on PORT.)
+if [ -n "$(listener_on "$ON_PORT")" ]; then
+  echo "FAIL port $ON_PORT (enforcement probe) is already in use by pid(s) $(listener_on "$ON_PORT" | tr '\n' ' ')"
+  echo "     Stop it, or run with a different port: PORT=8899 ./scripts/verify.sh"
+  exit 1
+fi
+
+REALM_REQUIRE_KNOWN_PROVIDER=true PORT=$ON_PORT npm start >"$ON_LOG" 2>&1 &
+ON_PID=$!
+ON_BASE="http://127.0.0.1:$ON_PORT"
+for _ in $(seq 1 50); do curl -fsS "$ON_BASE/healthz" >/dev/null 2>&1 && break; sleep 0.2; done
+
+# And confirm the thing answering is OURS. A healthz 200 proves something is
+# listening, not that it is the process we started with this commit's code.
+if ! kill -0 "$ON_PID" 2>/dev/null; then
+  echo "FAIL enforcement server (pid $ON_PID) is not running — the probes below would measure a stranger"
+  cat "$ON_LOG"
+  exit 1
+fi
+
+# Sign against the SAME ephemeral private key the server verifies with.
+mint_cred() {  # $1 = prov ('' for a credential with no prov claim); $2 = 'forge' to sign with a foreign key
+  node -e '
+    const jwt = require("jsonwebtoken");
+    const crypto = require("crypto");
+    const prov = process.argv[1];
+    const key = process.argv[2] === "forge"
+      ? crypto.generateKeyPairSync("ec", { namedCurve: "P-256" }).privateKey.export({ type: "pkcs8", format: "pem" })
+      : process.env.REALM_JWT_PRIVATE_KEY;
+    const payload = prov ? { prov } : {};
+    process.stdout.write(jwt.sign(payload, key, {
+      algorithm: "ES256", issuer: "realm", audience: "realm:livekit-mint",
+      subject: "verify-sh", expiresIn: 3600,
+    }));
+  ' "$1" "${2:-}"
+}
+mint_status() {  # $1 = bearer
+  curl -s -o /dev/null -w '%{http_code}' -X POST "$ON_BASE/livekit-token" \
+    -H 'content-type: application/json' -H "authorization: Bearer $1" \
+    -d '{"roomName":"verify_room"}'
+}
+
+check 'ON: an anonymous principal is refused at the wire' 403 "$(mint_status "$(mint_cred anonymous)")"
+check 'ON: an unknown provider is refused at the wire'    403 "$(mint_status "$(mint_cred firebase)")"
+check 'ON: a credential with no prov is refused'          403 "$(mint_status "$(mint_cred '')")"
+check 'ON: a signed-in principal still mints'             200 "$(mint_status "$(mint_cred google)")"
+check 'ON: a forged credential is 401, never 403'         401 "$(mint_status "$(mint_cred anonymous forge)")"
+
+kill "$ON_PID" 2>/dev/null || true
+wait "$ON_PID" 2>/dev/null || true
+held="$(listener_on "$ON_PORT")"; [ -n "$held" ] && kill $held 2>/dev/null || true
+rm -f "$ON_LOG"
 
 echo
 if [ "$failures" -eq 0 ]; then

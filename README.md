@@ -44,6 +44,71 @@ mint a token for any `roomName`. Private rooms need an admission predicate the
 Realm data model does not yet have (rooms carry `editorIds`/`canEdit`, which is
 edit rights, not a join roster). Tracked in `nickmeinhold/claude-tasks#2850`.
 
+The design for closing it is in
+[`docs/crucible/room-admission/`](docs/crucible/room-admission/) — tempered
+across two four-way cross-family strikes (`TEMPER.md`). Enforcement has to live
+here, at the mint: LiveKit has **no pre-join admission hook** (webhooks fire
+after the media connection is established), so the access token *is* the
+admission decision.
+
+### `REALM_REQUIRE_KNOWN_PROVIDER` — a risk trim, not the fix
+
+Step 0 of that design, and the only part of it that exists today. Set it to
+`true` and `/livekit-token` admits **only** a credential whose `prov` is a known
+signed-in provider (`SIGNED_IN_PROVIDERS` in `src/providers.js`); any other
+*valid* credential gets a **403**.
+
+An **unauthenticated** request — no bearer header, a forged signature, an expired
+or malformed credential — still gets a **401**, exactly as before and *before*
+this policy is consulted. ("Missing" here means a missing *credential*; a valid
+credential with a missing `prov` claim is authenticated, so it reaches the policy
+and gets the 403.) So the 403 is
+not "everything else"; it is specifically *"you are who you say you are, and
+that is not enough."*
+
+That ordering means a caller holding no valid credential learns nothing from
+**that request**. It is not secrecy about the policy, and an earlier draft of
+this paragraph overclaimed that it was: `/exchange` still mints a credential for
+an anonymous principal, so anyone can obtain one and discover the 403 on the next
+hop. The property is *no authorization decision is leaked before authentication*,
+which is worth having on its own — not that the switch is hidden.
+
+Unset (the default) is off and behaviour-identical; any value
+other than exactly `true`/`false` makes the service **refuse to start** rather
+than be silently read as off.
+
+It is an **allowlist, not a check for `prov == "anonymous"`** — and the
+distinction is load-bearing, not pedantry. `mapProvider` returns the string
+`"firebase"` for any *missing or unrecognised* `sign_in_provider`, which is
+neither empty nor the anonymous sentinel; under a "not anonymous" rule that
+fallback reads as proof of having signed in, so a token with no
+`sign_in_provider` would be admitted. Absence of evidence must not become
+evidence. Adding a new sign-in method therefore means adding a `mapProvider`
+case **and** a `SIGNED_IN_PROVIDERS` entry — until both land, that method's users
+are refused while the switch is on.
+
+Be precise about what this does and does not do:
+
+- **Does, once a deployment sets it to `true`:** removes the throwaway-uid
+  caller. A fresh anonymous Firebase uid can no longer walk into rooms by typing
+  a name. **Merging this changes nothing on any box** — the default is off, so
+  until someone sets the variable the guest path is exactly as open as it was.
+  The lock ships in the crate.
+- **Does not:** stop *any signed-in user* from requesting *any* room. That is
+  the actual bug, and it is closed by the engine-side admission predicate
+  (step 2), not here.
+
+It is also deliberately temporary — but **the two are not the same axis**, and
+whoever retires this switch must not assume they are. This one asks *"is this
+principal's sign-in method one we recognise?"* (a deployment-wide allowlist of
+providers). The engine's `permissions.allowAnonymous` asks *"may a guest enter
+**this room**?"* (a per-room policy). They share a mood, not a question.
+
+Retiring this switch therefore means **deleting** it once per-room admission is
+enforced — not reimplementing it as `prov !== "anonymous"` somewhere else. That
+rewrite would readmit the `"firebase"` don't-know fallback and restore the exact
+fail-open two reviewers independently found on this PR.
+
 ## CORS
 
 The deployed client is Flutter **web**, so both endpoints are cross-origin and
@@ -224,7 +289,10 @@ distributed attack.
 
 It is also **not** authorization. `/livekit-token` still mints a token for any
 `roomName` to any holder of a valid credential; admission control does not exist
-yet (claude-tasks#2850).
+yet (claude-tasks#2850). `REALM_REQUIRE_KNOWN_PROVIDER` narrows *who may use a
+credential at the mint*, not *which rooms they may name* — `/exchange` still
+issues credentials to anonymous principals; they are refused at
+`/livekit-token`.
 
 ## Contract parity
 
