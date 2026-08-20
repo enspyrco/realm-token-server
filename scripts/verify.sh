@@ -22,6 +22,9 @@ export PORT
 # Main + every probe port, in one place. Adding a probe means adding its offset
 # HERE, and cleanup follows automatically.
 PROBE_PORTS="$PORT $((PORT + 1)) $((PORT + 2)) $((PORT + 3))"
+# Ports this run has actually bound. Cleanup kills listeners on THESE only, so an
+# early exit caused by somebody else's server cannot evict it.
+STARTED_PORTS=""
 BASE="http://127.0.0.1:$PORT"
 LOG="$(mktemp)"
 
@@ -55,11 +58,20 @@ cleanup() {
   [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null || true
   wait "$SERVER_PID" 2>/dev/null || true
   local held p
-  # Every port this script may have bound, not only the main one.
-  # Every port this script may bind, from ONE list. A hardcoded triad orphaned a
-  # listener the moment a fourth probe was added (Tesla predicted exactly this in
-  # PR #11 round 1: "that is PR #6 round 7 waiting to happen in the next integer").
-  for p in $PROBE_PORTS; do
+  # ONLY ports this run actually BOUND — never the full PROBE_PORTS list.
+  #
+  # `trap cleanup EXIT` is installed before the occupied-port refusals, so the
+  # "port already in use — stop it, or use PORT=8899" exit path still runs
+  # cleanup. Against a static list it then killed the listener it had just
+  # politely declined to touch: the script contradicting its own "Refuse rather
+  # than evict" contract and terminating a developer's running work.
+  # (Carnot, PR #11 round 3.)
+  #
+  # STARTED_PORTS is appended at each successful launch, so a port we refused to
+  # bind is not in it and cannot be killed. Adding a probe means adding its
+  # offset to PROBE_PORTS (for the occupancy checks) and recording it here when
+  # it actually starts.
+  for p in $STARTED_PORTS; do
     held="$(listener_on "$p")"
     [ -n "$held" ] && kill $held 2>/dev/null || true
   done
@@ -85,6 +97,7 @@ fi
 
 npm start >"$LOG" 2>&1 &
 SERVER_PID=$!
+STARTED_PORTS="$STARTED_PORTS $PORT"
 
 # Boot, or say what the server said. A silent timeout here is the same
 # indistinguishable-silence problem the request log exists to solve.
@@ -221,6 +234,7 @@ fi
 
 BOOT_LOG=$(mktemp)
 set +e
+STARTED_PORTS="$STARTED_PORTS $((PORT + 1))"
 REALM_REQUIRE_KNOWN_PROVIDER=yes PORT=$((PORT + 1)) timeout 10 npm start >"$BOOT_LOG" 2>&1
 BOOT_RC=$?
 set -e
@@ -283,6 +297,7 @@ fi
 
 REALM_REQUIRE_KNOWN_PROVIDER=true PORT=$ON_PORT npm start >"$ON_LOG" 2>&1 &
 ON_PID=$!
+STARTED_PORTS="$STARTED_PORTS $ON_PORT"
 ON_BASE="http://127.0.0.1:$ON_PORT"
 for _ in $(seq 1 50); do curl -fsS "$ON_BASE/healthz" >/dev/null 2>&1 && break; sleep 0.2; done
 
@@ -357,6 +372,7 @@ ENF_SECRET="verify-sh-proxy-secret-0123456789abcdef"
 ENF_LOG=$(mktemp)
 REALM_TRUSTED_PROXY_SECRET="$ENF_SECRET" TRUST_PROXY_HOPS=1 PORT=$ENF_PORT npm start >"$ENF_LOG" 2>&1 &
 ENF_PID=$!
+STARTED_PORTS="$STARTED_PORTS $ENF_PORT"
 ENF_BASE="http://127.0.0.1:$ENF_PORT"
 for _ in $(seq 1 50); do curl -fsS "$ENF_BASE/healthz" >/dev/null 2>&1 && break; sleep 0.2; done
 
