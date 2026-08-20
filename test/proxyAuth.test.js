@@ -189,3 +189,43 @@ test('ENFORCED: the real proxy still gets per-IP buckets', async () => {
     assert.equal(status, 401, 'authenticated proxy must still get per-client buckets');
   });
 });
+
+test('createApp refuses a non-string secret at construction, not per-request', () => {
+  // createHash(number) throws inside the request, so this would 500 every caller
+  // presenting the header while the boot log still announced `enforced`.
+  assert.throws(() => createApp({
+    verifyProviderIdToken: async () => {},
+    privateKeyPem: keys.privateKeyPem,
+    publicKeyPem: keys.publicKeyPem,
+    mintLiveKitToken: async () => 'lk',
+    allowedOrigins: [],
+    trustedProxySecret: 12345,
+    log: () => {},
+  }), TypeError);
+});
+
+test('a discarded claim is visible in the request log, not silent', async () => {
+  const lines = [];
+  const app = createApp({
+    verifyProviderIdToken: async () => { throw new Error('bad'); },
+    privateKeyPem: keys.privateKeyPem,
+    publicKeyPem: keys.publicKeyPem,
+    mintLiveKitToken: async () => 'lk',
+    allowedOrigins: [],
+    trustProxyHops: 1,
+    trustedProxySecret: SECRET,
+    log: (l) => lines.push(l),
+  });
+  const server = await new Promise((r) => { const s = app.listen(0, () => r(s)); });
+  try {
+    await fetch(`http://127.0.0.1:${server.address().port}/exchange`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-forwarded-for': '203.0.113.99' },
+      body: JSON.stringify({ idToken: 'nope' }),
+    });
+  } finally {
+    await new Promise((r) => server.close(r));
+  }
+  const entry = lines.map((l) => JSON.parse(l)).find((e) => e.msg === 'request');
+  assert.equal(entry.proxyAuthenticated, false, 'a forged claim must leave a trace');
+});

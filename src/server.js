@@ -76,6 +76,13 @@ export function createApp({
     throw new TypeError('createApp: trustProxyHops must be a non-negative integer');
   }
 
+  // null or a string, nothing else. A number or object reaching createHash
+  // throws per REQUEST, not at boot — every caller presenting the header would
+  // 500 while the boot log still announced `enforced`. Fail at construction.
+  if (trustedProxySecret !== null && typeof trustedProxySecret !== 'string') {
+    throw new TypeError('createApp: trustedProxySecret must be a string or null');
+  }
+
   const app = express();
 
   // Decides what req.ip means, which is the whole of whether the per-IP limiter

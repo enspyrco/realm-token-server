@@ -96,6 +96,12 @@ export function makeRequestLogger({ log = console.log, now = Date.now, skipPaths
           // breaker is turning everyone away", and those want different
           // responses from whoever is reading.
           rateLimited: typeof req.rateLimited === 'string' ? req.rateLimited : null,
+          // null when unenforced, true/false when a secret is configured. `false`
+          // is the interesting line: a caller presented a forwarded address and
+          // could not authenticate as the proxy, so its claim was discarded.
+          // Without this the discard is silent, and a caller forging
+          // X-Forwarded-For looks identical to one that never tried.
+          proxyAuthenticated: typeof req.proxyAuthenticated === 'boolean' ? req.proxyAuthenticated : null,
         }));
       } catch (err) {
         // Telemetry must never be a liveness dependency. This runs in an
