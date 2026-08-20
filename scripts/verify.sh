@@ -140,9 +140,27 @@ check 'a disallowed origin is refused' 403 \
   "$(status -X POST "$BASE/exchange" -H 'Origin: https://evil.example' \
       -H 'content-type: application/json' -d '{}')"
 
-# The rate limit, over the wire. One request is already spent above, so this
-# takes the per-IP window to its ceiling and one past it.
-for _ in $(seq 1 29); do post_exchange >/dev/null; done
+# REALM_TRUSTED_PROXY_SECRET at the real entrypoint. The unit tests prove the
+# middleware discards an unauthenticated X-Forwarded-For; only this proves the env
+# var reaches createApp and the middleware is mounted BEFORE anything reads req.ip.
+# Mounting it one line later would pass every unit test and change nothing.
+#
+# Uses the UNSET default here, so this asserts the behaviour-identical promise:
+# with no secret configured, a forwarded address is still honoured. devenv.sh sets
+# TRUST_PROXY_HOPS=0, so the header is ignored anyway — what is checked is that the
+# request is SERVED, i.e. the middleware never refuses a request, only a claim.
+check 'UNSET: a request carrying a proxy-secret header is still served' 401 \
+  "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/exchange" \
+      -H 'content-type: application/json' \
+      -H 'x-realm-proxy-secret: not-configured-here' \
+      -H 'x-forwarded-for: 203.0.113.7' \
+      -d '{"idToken":"nope"}')"
+
+# The rate limit, over the wire. TWO /exchange requests are already spent above
+# (the bad-token check and the proxy-secret probe), so this takes the per-IP
+# window to its ceiling and one past it.
+# KEEP IN SYNC: every /exchange request added above must come off this count.
+for _ in $(seq 1 28); do post_exchange >/dev/null; done
 check 'the per-IP ceiling refuses the next request' 429 "$(post_exchange)"
 
 # The mint route has its own ceiling and its own budget. Exercised separately

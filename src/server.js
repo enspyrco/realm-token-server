@@ -3,6 +3,7 @@ import { makeExchangeHandler } from './exchange.js';
 import { makeMintHandler } from './mint.js';
 import { makeCorsMiddleware } from './cors.js';
 import { makeRequestLogger } from './requestLog.js';
+import { makeProxyAuthMiddleware } from './proxyAuth.js';
 import { makeRateLimiter, RateLimitScope } from './rateLimit.js';
 
 const MINUTE_MS = 60_000;
@@ -45,6 +46,11 @@ export function createApp({
   // from the environment via resolveTrustProxyHops, which refuses to guess in
   // production. See rateLimit.js for why both wrong values fail silently.
   trustProxyHops = 0,
+  // Shared secret the reverse proxy presents to have its X-Forwarded-For
+  // believed. null means unenforced — see proxyAuth.js. Authenticating the proxy
+  // is the only thing that separates it from any other local process, because on
+  // this deploy they arrive from the same address.
+  trustedProxySecret = null,
   // Deployment-wide requirement that a principal's `prov` be a KNOWN sign-in
   // provider (isSignedInProvider / SIGNED_IN_PROVIDERS) — an allowlist. It refuses
   // anonymous guests, and equally refuses phone auth, custom tokens and anything
@@ -77,6 +83,14 @@ export function createApp({
   // address beyond `trustProxyHops` trusted hops as the client, so a forged
   // prefix from an untrusted caller is ignored at the correct setting.
   app.set('trust proxy', trustProxyHops);
+
+  // Ahead of the logger, and therefore ahead of everything: express computes
+  // req.ip lazily from the headers as they stand when it is FIRST read, and the
+  // logger reads it. Mounting this later would authenticate a value already
+  // taken. Measured 2026-08-20: a host process forging X-Forwarded-For against
+  // the published port was believed, because Caddy runs network_mode: host and
+  // is therefore indistinguishable from it by address.
+  app.use(makeProxyAuthMiddleware({ secret: trustedProxySecret }));
 
   // Before everything, so the log sees requests CORS refuses (403s, denied
   // preflights) — those are exactly the ones worth seeing. It writes on
@@ -173,7 +187,14 @@ export function createApp({
   // be able to prevent a boot.
   try {
     (log ?? console.log)(
-      JSON.stringify({ event: 'policy', requireKnownProvider, trustProxyHops }),
+      // proxyAuth reports whether the secret is SET, never its value. Unenforced
+      // is the state an operator most needs to see, and it is the silent one.
+      JSON.stringify({
+        event: 'policy',
+        requireKnownProvider,
+        trustProxyHops,
+        proxyAuth: trustedProxySecret === null ? 'unenforced' : 'enforced',
+      }),
     );
   } catch { /* a broken sink must not stop the service starting */ }
 
