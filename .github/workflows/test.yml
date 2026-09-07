@@ -13,6 +13,11 @@ name: test
 
 on:
   pull_request:
+  # Also on main: publish.yml's test job covers pushes to main, but only for the
+  # paths that rebuild the image (src, package.json, Dockerfile). A change to
+  # scripts/, test/ or .github/ landing straight on main was tested by nothing.
+  push:
+    branches: [main]
   workflow_dispatch:
 
 # A force-push should not leave the previous run competing for a verdict.
