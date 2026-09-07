@@ -27,10 +27,11 @@ export REALM_JWT_PUBLIC_KEY="$(cat "$_key_dir/public.pem")"
 rm -rf "$_key_dir"
 unset _key_dir
 
-# Real project id: verifyIdToken needs no credential, only the id it checks the
-# token's `aud` against, so a local run reaches the same code path as production
-# and fails the same way on a bad token.
-export FIREBASE_PROJECT_ID="${FIREBASE_PROJECT_ID:-tech-world-dev}"
+# The REAL project id, and it has to be: verifyIdToken needs no credential, only
+# the id it checks the token's `aud` against. A placeholder here does not degrade
+# the dev loop, it inverts it — every genuine sign-in is rejected, and the refusal
+# is indistinguishable from a bad token.
+export FIREBASE_PROJECT_ID="${FIREBASE_PROJECT_ID:-adventures-in-tech-world-0}"
 
 export LIVEKIT_API_KEY="${LIVEKIT_API_KEY:-devkey}"
 export LIVEKIT_API_SECRET="${LIVEKIT_API_SECRET:-devsecret-devsecret-devsecret-32b}"
