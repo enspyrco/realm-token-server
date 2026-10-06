@@ -1,6 +1,7 @@
 import { corsConfigFromEnv } from './cors.js';
 import { resolveTrustProxyHops } from './rateLimit.js';
 import { resolveRequireKnownProvider } from './mint.js';
+import { resolveProxySecret } from './proxyAuth.js';
 
 // The single door between the environment and createApp's options.
 //
@@ -30,6 +31,7 @@ export function appOptionsFromEnv(env) {
   return {
     ttlSeconds: Number(env.REALM_CREDENTIAL_TTL_SECONDS || 3600),
     trustProxyHops: resolveTrustProxyHops(env),
+    trustedProxySecret: resolveProxySecret(env),
     requireKnownProvider: resolveRequireKnownProvider(env),
     ...corsConfigFromEnv(env),
   };

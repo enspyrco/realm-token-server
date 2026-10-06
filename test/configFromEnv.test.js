@@ -130,3 +130,27 @@ test('the old name is refused even when the NEW one is also set', () => {
     /renamed/,
   );
 });
+
+// The single-door contract: a key dropped from appOptionsFromEnv disables a
+// security control while every other test stays green. That is the failure this
+// file exists for, so each new key gets pinned here as it lands.
+test('appOptionsFromEnv carries REALM_TRUSTED_PROXY_SECRET through to the app options', () => {
+  const secret = 'z'.repeat(32);
+  const opts = appOptionsFromEnv(envWith({ REALM_TRUSTED_PROXY_SECRET: secret }));
+  assert.equal(opts.trustedProxySecret, secret);
+});
+
+test('appOptionsFromEnv yields null — not undefined — when the proxy secret is absent', () => {
+  const opts = appOptionsFromEnv(baseEnv);
+  // Distinguishable from a DROPPED key: createApp's default is also null, so
+  // undefined here would be indistinguishable from the wiring being cut.
+  assert.equal(Object.hasOwn(opts, 'trustedProxySecret'), true);
+  assert.equal(opts.trustedProxySecret, null);
+});
+
+test('appOptionsFromEnv refuses to boot on a weak proxy secret', () => {
+  assert.throws(
+    () => appOptionsFromEnv(envWith({ REALM_TRUSTED_PROXY_SECRET: 'too-short' })),
+    /REALM_TRUSTED_PROXY_SECRET/,
+  );
+});

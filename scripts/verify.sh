@@ -19,6 +19,12 @@ source scripts/devenv.sh
 
 PORT="${PORT:-8781}"
 export PORT
+# Main + every probe port, in one place. Adding a probe means adding its offset
+# HERE, and cleanup follows automatically.
+PROBE_PORTS="$PORT $((PORT + 1)) $((PORT + 2)) $((PORT + 3))"
+# Ports this run has actually bound. Cleanup kills listeners on THESE only, so an
+# early exit caused by somebody else's server cannot evict it.
+STARTED_PORTS=""
 BASE="http://127.0.0.1:$PORT"
 LOG="$(mktemp)"
 
@@ -52,8 +58,20 @@ cleanup() {
   [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null || true
   wait "$SERVER_PID" 2>/dev/null || true
   local held p
-  # Every port this script may have bound, not only the main one.
-  for p in "$PORT" $((PORT + 1)) $((PORT + 2)); do
+  # ONLY ports this run actually BOUND — never the full PROBE_PORTS list.
+  #
+  # `trap cleanup EXIT` is installed before the occupied-port refusals, so the
+  # "port already in use — stop it, or use PORT=8899" exit path still runs
+  # cleanup. Against a static list it then killed the listener it had just
+  # politely declined to touch: the script contradicting its own "Refuse rather
+  # than evict" contract and terminating a developer's running work.
+  # (Carnot, PR #11 round 3.)
+  #
+  # STARTED_PORTS is appended at each successful launch, so a port we refused to
+  # bind is not in it and cannot be killed. Adding a probe means adding its
+  # offset to PROBE_PORTS (for the occupancy checks) and recording it here when
+  # it actually starts.
+  for p in $STARTED_PORTS; do
     held="$(listener_on "$p")"
     [ -n "$held" ] && kill $held 2>/dev/null || true
   done
@@ -79,6 +97,7 @@ fi
 
 npm start >"$LOG" 2>&1 &
 SERVER_PID=$!
+STARTED_PORTS="$STARTED_PORTS $PORT"
 
 # Boot, or say what the server said. A silent timeout here is the same
 # indistinguishable-silence problem the request log exists to solve.
@@ -140,9 +159,29 @@ check 'a disallowed origin is refused' 403 \
   "$(status -X POST "$BASE/exchange" -H 'Origin: https://evil.example' \
       -H 'content-type: application/json' -d '{}')"
 
-# The rate limit, over the wire. One request is already spent above, so this
-# takes the per-IP window to its ceiling and one past it.
-for _ in $(seq 1 29); do post_exchange >/dev/null; done
+# UNSET, at the real entrypoint: the behaviour-identical promise. devenv.sh sets
+# TRUST_PROXY_HOPS=0, so XFF is ignored regardless — what this binds is narrower
+# than it looks and is written narrowly on purpose: the middleware never REFUSES a
+# request, only a claim.
+#
+# SCOPE, corrected by Carnot in PR #11 round 1: an earlier version of this comment
+# claimed the probe proved the env var reached createApp AND that the middleware was
+# mounted before req.ip is read. It proves neither — with hops=0 and no secret, the
+# result is identical whether the middleware is mounted, misordered, or absent. The
+# probe that actually binds those is the ENFORCED one further down (PORT+3), which
+# needs a secret set and hops=1 before the assertion can distinguish anything.
+check 'UNSET: a request carrying a proxy-secret header is still served' 401 \
+  "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/exchange" \
+      -H 'content-type: application/json' \
+      -H 'x-realm-proxy-secret: not-configured-here' \
+      -H 'x-forwarded-for: 203.0.113.7' \
+      -d '{"idToken":"nope"}')"
+
+# The rate limit, over the wire. TWO /exchange requests are already spent above
+# (the bad-token check and the proxy-secret probe), so this takes the per-IP
+# window to its ceiling and one past it.
+# KEEP IN SYNC: every /exchange request added above must come off this count.
+for _ in $(seq 1 28); do post_exchange >/dev/null; done
 check 'the per-IP ceiling refuses the next request' 429 "$(post_exchange)"
 
 # The mint route has its own ceiling and its own budget. Exercised separately
@@ -195,6 +234,7 @@ fi
 
 BOOT_LOG=$(mktemp)
 set +e
+STARTED_PORTS="$STARTED_PORTS $((PORT + 1))"
 REALM_REQUIRE_KNOWN_PROVIDER=yes PORT=$((PORT + 1)) timeout 10 npm start >"$BOOT_LOG" 2>&1
 BOOT_RC=$?
 set -e
@@ -257,6 +297,7 @@ fi
 
 REALM_REQUIRE_KNOWN_PROVIDER=true PORT=$ON_PORT npm start >"$ON_LOG" 2>&1 &
 ON_PID=$!
+STARTED_PORTS="$STARTED_PORTS $ON_PORT"
 ON_BASE="http://127.0.0.1:$ON_PORT"
 for _ in $(seq 1 50); do curl -fsS "$ON_BASE/healthz" >/dev/null 2>&1 && break; sleep 0.2; done
 
@@ -300,6 +341,87 @@ kill "$ON_PID" 2>/dev/null || true
 wait "$ON_PID" 2>/dev/null || true
 held="$(listener_on "$ON_PORT")"; [ -n "$held" ] && kill $held 2>/dev/null || true
 rm -f "$ON_LOG"
+
+# The ENFORCED path at the real entrypoint — the probe Carnot's round-1 finding
+# said was missing. It needs a real secret AND hops=1 before a forged
+# X-Forwarded-For means anything, so it is the only check here that can tell a
+# mounted middleware from an absent one at the wire.
+#
+# SCOPE, measured rather than asserted (the first draft of this comment claimed it
+# distinguished a correctly-ORDERED mount, which it does not): deleting the
+# app.use turns this RED; moving the app.use below the request logger leaves it
+# GREEN. So it binds PRESENCE and position-ahead-of-the-rate-limiters. It does not
+# bind position relative to the logger — and it needn't, because the logger reads
+# req.ip on 'finish', after this has already run either way.
+#
+# The assertion is the vulnerability itself, inverted. Rotate a forged client
+# address past the per-IP ceiling: unauthenticated, every address is discarded and
+# they all key on one socket, so the limiter bites (429). Delete the app.use, or
+# mount it after the logger where req.ip is already computed, and each forged
+# address gets its own bucket — no 429, and this goes red.
+#
+# Own port so it cannot collide with the servers above, and the same
+# occupancy-refusal discipline as the others.
+ENF_PORT=$((PORT + 3))
+if [ -n "$(listener_on "$ENF_PORT")" ]; then
+  echo "FAIL port $ENF_PORT (proxy-auth probe) is already in use by pid(s) $(listener_on "$ENF_PORT" | tr '\n' ' ')"
+  exit 1
+fi
+
+ENF_SECRET="verify-sh-proxy-secret-0123456789abcdef"
+ENF_LOG=$(mktemp)
+REALM_TRUSTED_PROXY_SECRET="$ENF_SECRET" TRUST_PROXY_HOPS=1 PORT=$ENF_PORT npm start >"$ENF_LOG" 2>&1 &
+ENF_PID=$!
+STARTED_PORTS="$STARTED_PORTS $ENF_PORT"
+ENF_BASE="http://127.0.0.1:$ENF_PORT"
+for _ in $(seq 1 50); do curl -fsS "$ENF_BASE/healthz" >/dev/null 2>&1 && break; sleep 0.2; done
+
+# Confirm the thing answering is OURS, not a stranger that won the bind.
+if ! kill -0 "$ENF_PID" 2>/dev/null; then
+  echo "FAIL proxy-auth server (pid $ENF_PID) is not running — the probes below would measure a stranger"
+  cat "$ENF_LOG"
+  exit 1
+fi
+
+enf_post() {  # $1 = forged client address; $2 = 'auth' to present the secret
+  if [ "${2:-}" = "auth" ]; then
+    curl -s -o /dev/null -w '%{http_code}' -X POST "$ENF_BASE/exchange" \
+      -H 'content-type: application/json' -H "x-forwarded-for: $1" \
+      -H "x-realm-proxy-secret: $ENF_SECRET" -d '{"idToken":"nope"}'
+  else
+    curl -s -o /dev/null -w '%{http_code}' -X POST "$ENF_BASE/exchange" \
+      -H 'content-type: application/json' -H "x-forwarded-for: $1" -d '{"idToken":"nope"}'
+  fi
+}
+
+check 'ENFORCED: the boot line announces the policy' 1 \
+  "$(grep -c '"proxyAuth":"enforced"' "$ENF_LOG" >/dev/null && echo 1 || echo 0)"
+
+# 30 rotating forged addresses. Unauthenticated they all key on the socket, so the
+# ceiling is reached; if the strip were not happening each would be its own bucket.
+enf_seen_429=0
+for i in $(seq 1 31); do
+  [ "$(enf_post "203.0.113.$i")" = "429" ] && { enf_seen_429=1; break; }
+done
+check 'ENFORCED: rotating a forged X-Forwarded-For cannot evade the ceiling' 1 "$enf_seen_429"
+
+# The OTHER terminal, at the wire. The check above binds fail-OPEN (a forgery must
+# not buy a fresh bucket). It is deaf to fail-closed-too-hard: invert the `if (!ok)`
+# to always-strip and it stays green while every real client collapses onto one
+# bucket — the outage a naive address-based fix would have shipped. Only an
+# in-process test caught that, in the chamber this file exists because it cannot
+# witness wiring. `enf_post ... auth` existed and was never driven; a helper that
+# cannot fire is a press release. (Tesla, PR #11 round 3.)
+#
+# The ceiling is already spent by the loop above, so an AUTHENTICATED caller
+# presenting a fresh client address must still be served: its bucket is its own.
+check 'ENFORCED: an authenticated proxy still gets a fresh bucket past the ceiling' 401 \
+  "$(enf_post "198.51.100.42" auth)"
+
+kill "$ENF_PID" 2>/dev/null || true
+wait "$ENF_PID" 2>/dev/null || true
+held="$(listener_on "$ENF_PORT")"; [ -n "$held" ] && kill $held 2>/dev/null || true
+rm -f "$ENF_LOG"
 
 echo
 if [ "$failures" -eq 0 ]; then

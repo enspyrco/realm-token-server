@@ -3,6 +3,7 @@ import { makeExchangeHandler } from './exchange.js';
 import { makeMintHandler } from './mint.js';
 import { makeCorsMiddleware } from './cors.js';
 import { makeRequestLogger } from './requestLog.js';
+import { makeProxyAuthMiddleware, assertValidProxySecret } from './proxyAuth.js';
 import { makeRateLimiter, RateLimitScope } from './rateLimit.js';
 
 const MINUTE_MS = 60_000;
@@ -45,6 +46,11 @@ export function createApp({
   // from the environment via resolveTrustProxyHops, which refuses to guess in
   // production. See rateLimit.js for why both wrong values fail silently.
   trustProxyHops = 0,
+  // Shared secret the reverse proxy presents to have its X-Forwarded-For
+  // believed. null means unenforced — see proxyAuth.js. Authenticating the proxy
+  // is the only thing that separates it from any other local process, because on
+  // this deploy they arrive from the same address.
+  trustedProxySecret = null,
   // Deployment-wide requirement that a principal's `prov` be a KNOWN sign-in
   // provider (isSignedInProvider / SIGNED_IN_PROVIDERS) — an allowlist. It refuses
   // anonymous guests, and equally refuses phone auth, custom tokens and anything
@@ -70,6 +76,17 @@ export function createApp({
     throw new TypeError('createApp: trustProxyHops must be a non-negative integer');
   }
 
+  // Same rule as the env resolver, from the same function — createApp is the
+  // public constructor and inherits none of appOptionsFromEnv's validation.
+  // A bare `typeof === 'string'` check here passed the EMPTY string, which then
+  // took the enforcing branch and authenticated any caller sending a bare
+  // header (`matches('', '')` is true) while the boot line printed `enforced`.
+  // A control that reports enforced while admitting everyone is the exact
+  // failure this option exists to remove.
+  if (trustedProxySecret !== null) {
+    assertValidProxySecret(trustedProxySecret);
+  }
+
   const app = express();
 
   // Decides what req.ip means, which is the whole of whether the per-IP limiter
@@ -77,6 +94,27 @@ export function createApp({
   // address beyond `trustProxyHops` trusted hops as the client, so a forged
   // prefix from an untrusted caller is ignored at the correct setting.
   app.set('trust proxy', trustProxyHops);
+
+  // MUST precede the RATE LIMITERS. They read req.ip during the request, so a
+  // forwarding claim still standing at that point is the one the per-IP bucket
+  // is keyed on — which is the entire vulnerability.
+  //
+  // Corrected 2026-08-20 (PR #11 round 1): an earlier version of this comment
+  // said "ahead of the logger, because express computes req.ip lazily on FIRST
+  // read and the logger reads it." That mechanism is wrong. requestLog reads
+  // req.ip inside res.on('finish') (requestLog.js:120) — after the response, by
+  // which time this has run regardless of their relative order. MEASURED: moving
+  // this below the logger keeps all 153 unit tests AND the enforced wire probe
+  // green; deleting it reddens the wire probe. So the probe binds PRESENCE and
+  // position-before-the-limiters, not position-before-the-logger.
+  //
+  // It stays above the logger anyway, for a smaller and honest reason: the log
+  // line then describes post-strip state. That is legibility, not safety.
+  //
+  // Measured 2026-08-20: a host process forging X-Forwarded-For against the
+  // published port was believed, because Caddy runs network_mode: host and is
+  // therefore indistinguishable from it by address.
+  app.use(makeProxyAuthMiddleware({ secret: trustedProxySecret }));
 
   // Before everything, so the log sees requests CORS refuses (403s, denied
   // preflights) — those are exactly the ones worth seeing. It writes on
@@ -173,7 +211,18 @@ export function createApp({
   // be able to prevent a boot.
   try {
     (log ?? console.log)(
-      JSON.stringify({ event: 'policy', requireKnownProvider, trustProxyHops }),
+      // proxyAuth reports whether the secret is SET, never its value. Unenforced
+      // is the state an operator most needs to see, and it is the silent one.
+      // SAME SCOPE CAVEAT as requireKnownProvider above: this reports createApp's
+      // ARGUMENT. Delete the app.use(makeProxyAuthMiddleware(...)) line and this
+      // still prints `enforced`. The witness for the MOUNT is the enforced wire
+      // probe in scripts/verify.sh, not this line.
+      JSON.stringify({
+        event: 'policy',
+        requireKnownProvider,
+        trustProxyHops,
+        proxyAuth: trustedProxySecret === null ? 'unenforced' : 'enforced',
+      }),
     );
   } catch { /* a broken sink must not stop the service starting */ }
 
