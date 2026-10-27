@@ -4,7 +4,7 @@
 // The rest of test/realmCredential.test.js mints with this code and verifies
 // with this code. That proves self-consistency and cannot, even in principle,
 // catch a divergence from the Dart reference at
-// `tech_world:examples/livekit-token-server/lib/src/realm_credential_jwt.dart`
+// `realm:examples/livekit-token-server/lib/src/realm_credential_jwt.dart`
 // — a codec can be self-consistently wrong. The two suites are near-mirror
 // images down to the test names, which reads like agreement and is actually two
 // independent self-checks.
@@ -17,12 +17,13 @@
 //   1. openssl ecparam -name prime256v1 -genkey -noout -out k.pem
 //      openssl pkcs8 -topk8 -nocrypt -in k.pem -out private.pem
 //      openssl ec -in k.pem -pubout -out public.pem
-//   2. In tech_world, `dart pub get`, then run a script that calls
+//   2. In enspyrco/realm, `fvm flutter pub get` at the root, then run a script
+//      in examples/livekit-token-server that calls
 //      RealmCredentialIssuer(signingKey: ECPrivateKey(pem), ttl: <long>)
 //      .issue(subject: UserId('parity-vector-subject'),
 //             provider: AuthProviderId('google'),
 //             issuedAt: DateTime.utc(2026, 1, 1))
-//   3. Commit the PUBLIC key and the token. NEVER the private key — tech_world's
+//   3. Commit the PUBLIC key and the token. NEVER the private key — realm's
 //      gitleaks pre-commit gate blocks key material and it is right to.
 //
 // The keypair is throwaway and deployed nowhere. The long TTL is deliberate: a

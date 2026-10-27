@@ -1,8 +1,9 @@
 # realm-token-server
 
 The Realm **credential-exchange + LiveKit token-mint** server. Production home for
-the token endpoint decided in `enspyrco/tech_world` — `packages/realm/DESIGN.md`,
-"Credential exchange boundary" (resolved 2026-08-10). Replaced the Firebase Cloud
+the token endpoint decided in [`enspyrco/realm`](https://github.com/enspyrco/realm) —
+`packages/realm/DESIGN.md`, "Credential exchange boundary" (resolved 2026-08-10,
+while the engine still lived in `enspyrco/tech_world`). Replaced the Firebase Cloud
 Function `retrieveLiveKitToken` (deleted 2026-10-27, along with the client's
 fallback to it); runs as a small Node service on OCI next to LiveKit (which
 already holds the LiveKit API secret).
@@ -302,8 +303,8 @@ issues credentials to anonymous principals; they are refused at
 
 The credential format (`iss=realm`, `aud=realm:livekit-mint`, `sub`, `prov`
 claim, ES256) matches the Dart reference at
-`enspyrco/tech_world:examples/livekit-token-server/lib/src/realm_credential_jwt.dart`
-and the client `FirebaseAuthProvider` in `packages/realm_firebase`. A credential
+`enspyrco/realm:examples/livekit-token-server/lib/src/realm_credential_jwt.dart`
+and the client `FirebaseAuthProvider` in `enspyrco/realm:packages/realm_firebase`. A credential
 minted here verifies against that Dart verifier and vice versa. Keep the two in
 lockstep.
 
