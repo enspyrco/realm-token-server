@@ -17,14 +17,14 @@
 //   1. openssl ecparam -name prime256v1 -genkey -noout -out k.pem
 //      openssl pkcs8 -topk8 -nocrypt -in k.pem -out private.pem
 //      openssl ec -in k.pem -pubout -out public.pem
-//   2. In enspyrco/realm, `fvm flutter pub get` at the root, then run a script
+//   2. In enspyrco/realm, `flutter pub get` at the root, then run a script
 //      in examples/livekit-token-server that calls
 //      RealmCredentialIssuer(signingKey: ECPrivateKey(pem), ttl: <long>)
 //      .issue(subject: UserId('parity-vector-subject'),
 //             provider: AuthProviderId('google'),
 //             issuedAt: DateTime.utc(2026, 1, 1))
-//   3. Commit the PUBLIC key and the token. NEVER the private key — realm's
-//      gitleaks pre-commit gate blocks key material and it is right to.
+//   3. Commit the PUBLIC key and the token. NEVER the private key: both repos
+//      are public, so a committed private key is a published one.
 //
 // The keypair is throwaway and deployed nowhere. The long TTL is deliberate: a
 // committed vector must not rot into a false red.
