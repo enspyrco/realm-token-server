@@ -1,0 +1,6 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "bumpVersion": "patch",
+  "description": "bumpVersion: publish.yml publishes on any package.json / package-lock.json change and refuses to overwrite an existing version tag, so every dependency update must also bump the app version. Publishing never deploys; promotion stays a human pin on the box."
+}
