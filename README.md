@@ -2,7 +2,7 @@
 
 The Realm **credential-exchange + LiveKit token-mint** server. Production home for
 the token endpoint decided in [`enspyrco/realm`](https://github.com/enspyrco/realm) —
-`packages/realm/DESIGN.md`, "Credential exchange boundary" (resolved 2026-08-10,
+`packages/realm_core/DESIGN.md`, "Credential exchange boundary" (resolved 2026-08-10,
 while the engine still lived in `enspyrco/tech_world`). Replaced the Firebase Cloud
 Function `retrieveLiveKitToken` (deleted 2026-10-27, along with the client's
 fallback to it); runs as a small Node service on OCI next to LiveKit (which

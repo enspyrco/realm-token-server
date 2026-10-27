@@ -8,7 +8,7 @@
 // "Asymmetric by construction"), so the shared constant gets its own dependency-free
 // home rather than dragging the Admin SDK across the boundary.
 //
-// These strings must match packages/realm AuthProviderId in enspyrco/realm.
+// These strings must match packages/realm_core AuthProviderId in enspyrco/realm.
 
 export const ANONYMOUS_PROVIDER = 'anonymous';
 

@@ -25,7 +25,7 @@ function ensureApp() {
 }
 
 // Maps Firebase's sign_in_provider to a Realm AuthProviderId wire string
-// (must match the AuthProviderId constants in enspyrco/realm's packages/realm).
+// (must match the AuthProviderId constants in enspyrco/realm's packages/realm_core).
 //
 // EXPORTED so its arms can be pinned by a test. Under REALM_REQUIRE_KNOWN_PROVIDER,
 // mint.js admits a principal only if `isSignedInProvider(prov)` — an ALLOWLIST
