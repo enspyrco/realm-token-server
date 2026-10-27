@@ -2,9 +2,13 @@
 
 The Realm **credential-exchange + LiveKit token-mint** server. Production home for
 the token endpoint decided in `enspyrco/tech_world` — `packages/realm/DESIGN.md`,
-"Credential exchange boundary" (resolved 2026-08-10). Replaces the Firebase Cloud
-Function `retrieveLiveKitToken`; runs as a small Node service on OCI next to
-LiveKit (which already holds the LiveKit API secret).
+"Credential exchange boundary" (resolved 2026-08-10). Replaced the Firebase Cloud
+Function `retrieveLiveKitToken` (deleted 2026-10-27, along with the client's
+fallback to it); runs as a small Node service on OCI next to LiveKit (which
+already holds the LiveKit API secret).
+
+**This is now the only LiveKit token mint for Tech World — there is no
+fallback.** If it is down, nobody can join a room.
 
 ## Why this exists
 
