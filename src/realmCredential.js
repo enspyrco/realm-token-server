@@ -1,7 +1,7 @@
 import jwt from 'jsonwebtoken';
 
 // The Realm-issued credential JWT — production port of the Dart reference at
-// enspyrco/tech_world:examples/livekit-token-server/lib/src/realm_credential_jwt.dart.
+// enspyrco/realm:examples/livekit-token-server/lib/src/realm_credential_jwt.dart.
 // The two MUST agree on these constants and claim names: a credential minted by
 // this server verifies against the Dart verifier and vice versa.
 //
