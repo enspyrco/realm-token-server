@@ -303,7 +303,7 @@ issues credentials to anonymous principals; they are refused at
 
 The credential format (`iss=realm`, `aud=realm:livekit-mint`, `sub`, `prov`
 claim, ES256) matches the Dart reference at
-`enspyrco/realm:examples/livekit-token-server/lib/src/realm_credential_jwt.dart`
+`enspyrco/realm:packages/realm_credential/lib/src/realm_credential_jwt.dart`
 and the client `FirebaseAuthProvider` in `enspyrco/realm:packages/realm_firebase`. A credential
 minted here verifies against that Dart verifier and vice versa. Keep the two in
 lockstep.
