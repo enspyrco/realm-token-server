@@ -4,7 +4,7 @@
 // The rest of test/realmCredential.test.js mints with this code and verifies
 // with this code. That proves self-consistency and cannot, even in principle,
 // catch a divergence from the Dart reference at
-// `realm:examples/livekit-token-server/lib/src/realm_credential_jwt.dart`
+// `realm:packages/realm_credential/lib/src/realm_credential_jwt.dart`
 // — a codec can be self-consistently wrong. The two suites are near-mirror
 // images down to the test names, which reads like agreement and is actually two
 // independent self-checks.
@@ -18,7 +18,7 @@
 //      openssl pkcs8 -topk8 -nocrypt -in k.pem -out private.pem
 //      openssl ec -in k.pem -pubout -out public.pem
 //   2. In enspyrco/realm, `flutter pub get` at the root, then run a script
-//      in examples/livekit-token-server that calls
+//      in packages/realm_credential that calls
 //      RealmCredentialIssuer(signingKey: ECPrivateKey(pem), ttl: <long>)
 //      .issue(subject: UserId('parity-vector-subject'),
 //             provider: AuthProviderId('google'),
